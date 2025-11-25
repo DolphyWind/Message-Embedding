@@ -1,5 +1,5 @@
 [project]
-name = "finetuningsimilaritymodel"
+name = "memoriesfinetuning"
 version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
@@ -8,5 +8,6 @@ dependencies = [
     "sentence-transformers>=5.1.2",
     "spacy>=3.8.7",
     "torch>=2.8.0",
+    "tqdm>=4.67.1",
     "transformers>=4.57.1",
 ]
