@@ -1,0 +1,9 @@
+{
+    "typeCheckingMode": "standard",
+    "basedpyright.analysis.ignore": [
+        "./data/",
+        "./data2/"
+    ],
+    "basedpyright.analysis.diagnosticSeverityOverrides": {
+    }
+}

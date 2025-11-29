@@ -10,5 +10,6 @@ wheels/
 .venv
 
 # Custom
-data/
-preprocessing/
+*.db
+*.parquet
+preprocessing/*
