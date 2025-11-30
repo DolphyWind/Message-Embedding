@@ -57,11 +57,11 @@ def real_embedding_test(tokenizer: RobertaTokenizerFast, model: nn.Module, devic
     # token_ids: torch.Tensor = tokenizer_out['input_ids'].to(device)
     # attn_mask: torch.Tensor = tokenizer_out['attention_mask'].to(device)
     # model_in: torch.Tensor = torch.tensor(token_ids, dtype=torch.long).to(device)
-    out = model.encode(sentences)
     # attn_mask_unsq: torch.Tensor = attn_mask.unsqueeze(-1)
     # out = (out * attn_mask_unsq).sum(dim=1) / attn_mask_unsq.sum(dim=1)
     # v1 = out[0].unsqueeze(0)
     # v2 = out[1].unsqueeze(0)
+    out = model.encode(sentences)
     sim: float = util.cos_sim(out[0], out[1]).item()
     print(f"Similarity score: {sim}")
 
