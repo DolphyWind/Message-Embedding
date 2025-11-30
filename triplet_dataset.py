@@ -34,8 +34,8 @@ class TripletDataset(Dataset):
         hf_dataset: datasets.DatasetDict,
         context_len: int,
         in_context_probability: float = 0.05,
-        neg_margin: float = 1.0,
-        neg_alpha: float = 1.0,
+        base_margin: float = 1.0,
+        alpha: float = 1.0,
     ) -> None:
         super().__init__()
 
@@ -43,8 +43,8 @@ class TripletDataset(Dataset):
         self._hf_dataset = hf_dataset
         self._context_len: int = context_len
         self._icp: float = in_context_probability
-        self._neg_margin: float = neg_margin
-        self._neg_alpha: float = neg_alpha
+        self._base_margin: float = base_margin
+        self._alpha: float = alpha
 
         self._indexable_lens: dict[str, int] = {}
         for k in self._segments:
@@ -68,14 +68,14 @@ class TripletDataset(Dataset):
             negative_index = random.randint(0, self._context_len - 2)
             negative_example = current_segment[actual_index + negative_index]
             C_minus_1 = self._context_len - 1
-            margin = self._neg_margin * (1 - math.exp(-self._neg_alpha * (C_minus_1 - negative_index)))
+            margin = self._base_margin * (1 - math.exp(-self._alpha * (C_minus_1 - negative_index)))
         else:
             negative_index = index
             while index <= negative_index < index + self._context_len:
                 negative_index = random.randint(0, self.__len__() - 1)
             ns, ni = self._index_dataset(negative_index)
             negative_example = ns[ni]
-            margin = self._neg_margin
+            margin = self._base_margin
 
         positive_example = current_segment[actual_index + self._context_len - 1]
         anchor = context["content"]
