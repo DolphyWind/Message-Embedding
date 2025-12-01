@@ -64,7 +64,6 @@ class TripletDataset(Dataset):
         self._total_indexable_len: int = sum(self._indexable_lens.values())
 
     def __len__(self) -> int:
-        return 1000
         return self._total_indexable_len
 
     def __getitem__(self, index):
