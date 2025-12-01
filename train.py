@@ -37,6 +37,7 @@ class Trainer:
         self.optimizer_name: Literal['AdamW', 'Adam', 'Lion'] = args.optimizer_name
         self.weight_decay: float = args.weight_decay
         self.experiment_name: str = args.experiment_name
+        self.run_name: str = args.run_name
         self.continue_from: Optional[Path] = None if not args.continue_from else Path(args.continue_from)
         self.lr_end_factor: float = args.lr_end_factor
         self.data_path: Path = args.data_path
@@ -47,7 +48,7 @@ class Trainer:
         self.mlflow_password: str = args.mlflow_password
 
         self.experiment_path: Path = self.out_path / self.experiment_name
-        self.experiment_path.mkdir(exist_ok=False, parents=True)
+        self.experiment_path.mkdir(exist_ok=True, parents=True)
 
         self.train_dataset: TripletDataset
         self.val_dataset: TripletDataset
@@ -190,6 +191,12 @@ class Trainer:
             help="The name of the experiment.",
         )
         self.parser.add_argument(
+            '--run_name',
+            type=str,
+            default=None,
+            help="The name of the MLFlow run."
+        )
+        self.parser.add_argument(
             '--continue_from',
             type=str,
             default='',
@@ -267,7 +274,15 @@ class Trainer:
         # TODO: Model saving
 
         mlflow.set_experiment(self.experiment_name)
-        with mlflow.start_run() as run:
+        run_kwargs = {}
+        if self.run_name:
+            run_kwargs = {'run_name': self.run_name}
+
+        with mlflow.start_run(**run_kwargs) as run:
+            self.run_name = self.run_name or run.data.tags.get("mlflow.runName")
+            run_path: Path = self.experiment_path / self.run_name
+            run_path.mkdir(exist_ok=False)
+
             total_params: int = sum([p.numel() for p in self.model.parameters()])
             print(f"Model has {total_params} parameters.")
             mlflow.log_param("lr_ft", self.lr_ft)
@@ -296,7 +311,6 @@ class Trainer:
 
             tokenizer = self.model.tokenizer
             token_context_length: int = self.model.token_context_length
-            print(f"{token_context_length=}")
             for epoch in range(1, self.epochs + 1):
                 total_train_loss = 0.0
                 total_val_loss = 0.0
