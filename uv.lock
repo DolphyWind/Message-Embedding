@@ -1276,6 +1276,18 @@ wheels = [
 ]
 
 [[package]]
+name = "lion-pytorch"
+version = "0.2.3"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "torch" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/30/8b/b7afad06d3ace3eecf8d7b63f9f3bbab450039320fa63c7febaa5fe73765/lion_pytorch-0.2.3.tar.gz", hash = "sha256:42ba117ce857e9dd6c67c727e22e575671fd72e441900af137b05e7ee5c8fd88", size = 6990, upload-time = "2024-11-27T15:28:58.714Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/3c/3a/17394e7c09a6796887d12435a7711f6bf6321efacd3e635fc69fcf6dfc70/lion_pytorch-0.2.3-py3-none-any.whl", hash = "sha256:a1f0cb6ddb46c1f5e130b985d2759c33c178195ef88b216621cb4177c6284f81", size = 6565, upload-time = "2024-11-27T15:28:57.859Z" },
+]
+
+[[package]]
 name = "mako"
 version = "1.3.10"
 source = { registry = "https://pypi.org/simple" }
@@ -1481,6 +1493,7 @@ dependencies = [
     { name = "accelerate" },
     { name = "datasets" },
     { name = "fastparquet" },
+    { name = "lion-pytorch" },
     { name = "mlflow" },
     { name = "pandas" },
     { name = "parquet" },
@@ -1496,6 +1509,7 @@ requires-dist = [
     { name = "accelerate", specifier = ">=1.12.0" },
     { name = "datasets", specifier = ">=4.4.1" },
     { name = "fastparquet", specifier = ">=2024.11.0" },
+    { name = "lion-pytorch", specifier = ">=0.2.3" },
     { name = "mlflow", specifier = ">=3.6.0" },
     { name = "pandas", specifier = ">=2.3.3" },
     { name = "parquet", specifier = ">=1.3.1" },

@@ -4,10 +4,12 @@ from typing import Optional
 from datasets import DatasetDict, load_dataset
 import datasets
 import random
+import torch
 from torch.utils.data import Dataset
 
 
 def load_and_split(files: list[Path], train_size: float = 0.85) -> DatasetDict:
+    assert 0.0 <= train_size <= 1, "Train size must be between 0 and 1"
     segments = {
         fname.stem: fname.__str__()
         for fname in files
@@ -26,6 +28,13 @@ def load_and_split(files: list[Path], train_size: float = 0.85) -> DatasetDict:
         "train": train_dataset,
         "val": val_dataset,
     })
+
+def collate_triplet(batch: list[tuple[str, str, str, float]]) -> tuple[list[str], list[str], list[str], torch.Tensor]:
+    anchors = [x[0] for x in batch]
+    positives = [x[1] for x in batch]
+    negatives = [x[2] for x in batch]
+    margins = torch.tensor([x[3] for x in batch])
+    return anchors, positives, negatives, margins
 
 
 class TripletDataset(Dataset):
@@ -55,6 +64,7 @@ class TripletDataset(Dataset):
         self._total_indexable_len: int = sum(self._indexable_lens.values())
 
     def __len__(self) -> int:
+        return 1000
         return self._total_indexable_len
 
     def __getitem__(self, index):
