@@ -19,7 +19,10 @@ class MessageEmbeddingModel(nn.Module):
         self._pooling_mode: Literal['mean', 'attention'] = pooling_mode
         self._embedding_dim: float = self._underlying_model.config.hidden_size
         self._message_context_length: int = message_context_length
-        self.token_context_length: int = self._tokenizer.model_max_length
+        # self.token_context_length: int = self._tokenizer.model_max_length
+        # https://stackoverflow.com/questions/76547541/huggingface-how-do-i-find-the-max-length-of-a-model#comment136833899_77286207
+        # self.token_context_length: int = self._underlying_model.config.max_position_embeddings
+        self.token_context_length: int = 512
 
         new_tokens = ['<video>', '</video>', '<link/>', '<attachment/>', '</user>'] + [f"<user{i}>" for i in range(self._message_context_length)]
         self._num_new_tokens: int = self._tokenizer.add_tokens(new_tokens)
@@ -29,7 +32,7 @@ class MessageEmbeddingModel(nn.Module):
             self.attention_query: nn.Linear = nn.Linear(self._embedding_dim, 1)
 
     def forward(self, x, attn_mask, *args, **kwargs):
-        last_hidden_state = self._underlying_model(x, attn_mask, *args, **kwargs).last_hidden_state
+        last_hidden_state = self._underlying_model(x, attention_mask=attn_mask, *args, **kwargs).last_hidden_state
         pooler_out = self.pool(last_hidden_state, attn_mask)
         return pooler_out
 
@@ -56,7 +59,7 @@ class MessageEmbeddingModel(nn.Module):
         old_params = [p for n, p in self._underlying_model.named_parameters() if 'attention_query' not in n]
         new_params = []
         if self._pooling_mode == 'attention':
-            new_params = [self.attention_query.parameters()]
+            new_params = list(self.attention_query.parameters())
 
         return {
             'old': old_params,

@@ -1,25 +1,31 @@
-import os
 from argparse import ArgumentParser
+from contextlib import nullcontext
+import math
+import os
 from pathlib import Path
 from typing import Literal, Optional
+
+from accelerate import Accelerator
 from datasets import DatasetDict
+from lion_pytorch import Lion
 import mlflow
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
-from lion_pytorch import Lion
-from torch.optim.lr_scheduler import LinearLR, LRScheduler
+from torch.optim.lr_scheduler import LRScheduler, LinearLR
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
 from model import MessageEmbeddingModel
-from triplet_dataset import TripletDataset, load_and_split, collate_triplet
-from accelerate import Accelerator
+from triplet_dataset import TripletDataset, collate_triplet, load_and_split
 
 
 class Trainer:
     def __init__(self) -> None:
+        self.accelerator = Accelerator()
+        self.device: torch.device = self.accelerator.device
+
         self.create_argparser()
         args = self.parser.parse_args()
         self.base_model_name: str = args.base_model
@@ -64,7 +70,7 @@ class Trainer:
             os.environ['MLFLOW_TRACKING_URI'] = self.mlflow_uri
             os.environ['MLFLOW_TRACKING_USERNAME'] = self.mlflow_username
             os.environ['MLFLOW_TRACKING_PASSWORD'] = self.mlflow_password
-            mlflow.set_tracking_uri(None)
+
         files: list[Path] = [p for p in self.data_path.glob('*.parquet')]
         dataset: DatasetDict = load_and_split(files, self.train_size)
         self.train_dataset = TripletDataset(
@@ -87,7 +93,13 @@ class Trainer:
             message_context_length=self.context_length,
         )
         self.optimizer = self.get_new_optimizer()
-        self.lr_scheduler = LinearLR(self.optimizer, start_factor=1.0, end_factor=self.lr_end_factor)
+        steps_per_epoch: int = math.ceil(len(self.train_dataset) / self.batch_size)
+        self.lr_scheduler = LinearLR(
+            self.optimizer,
+            start_factor=1.0,
+            end_factor=self.lr_end_factor,
+            total_iters=self.epochs * steps_per_epoch
+        )
 
     def create_argparser(self) -> None:
         self.parser: ArgumentParser = ArgumentParser(
@@ -271,154 +283,182 @@ class Trainer:
     def train(self) -> None:
         # TODO: Load train state if continue_from is given
         # TODO: Implement LoRA
-        # TODO: Model saving
 
-        mlflow.set_experiment(self.experiment_name)
-        run_kwargs = {}
-        if self.run_name:
-            run_kwargs = {'run_name': self.run_name}
+        if self.accelerator.is_main_process:
+            mlflow.set_experiment(self.experiment_name)
+            extra_run_kwargs = {}
+            if self.run_name:
+                extra_run_kwargs = {'run_name': self.run_name}
+            ctx = mlflow.start_run(log_system_metrics=True, **extra_run_kwargs)
+        else:
+            ctx = nullcontext()
 
-        with mlflow.start_run(**run_kwargs) as run:
-            self.run_name = self.run_name or run.data.tags.get("mlflow.runName")
-            run_path: Path = self.experiment_path / self.run_name
-            run_path.mkdir(exist_ok=False)
+        with ctx as run:
+            if self.accelerator.is_main_process:
+                self.run_name = self.run_name or run.data.tags.get("mlflow.runName")
+                run_path: Path = self.experiment_path / self.run_name
+                run_path.mkdir(exist_ok=False)
 
-            total_params: int = sum([p.numel() for p in self.model.parameters()])
-            print(f"Model has {total_params} parameters.")
-            mlflow.log_param("lr_ft", self.lr_ft)
-            mlflow.log_param("lr_base", self.lr_base)
-            mlflow.log_param("weight_decay", self.weight_decay)
-            mlflow.log_param("base_model_name", self.base_model_name)
-            mlflow.log_param("pooling_mode", self.pooling_mode)
-            mlflow.log_param("context_length", self.context_length)
-            mlflow.log_param("in_context_probability", self.icp)
-            mlflow.log_param("margin", self.margin)
-            mlflow.log_param("alpha", self.alpha)
-            mlflow.log_param("lora", self.lora)
-            mlflow.log_param("optimizer_name", self.optimizer_name)
-            mlflow.log_param("lr_end_factor", self.lr_end_factor)
-            mlflow.log_param("train_size", self.train_size)
-            mlflow.log_param("batch_size", self.batch_size)
-            mlflow.log_param("param_count", total_params)
+                total_params: int = sum([p.numel() for p in self.model.parameters()])
+                print(f"Model has {total_params} parameters.")
+                mlflow.log_param("lr_ft", self.lr_ft)
+                mlflow.log_param("lr_base", self.lr_base)
+                mlflow.log_param("weight_decay", self.weight_decay)
+                mlflow.log_param("base_model_name", self.base_model_name)
+                mlflow.log_param("pooling_mode", self.pooling_mode)
+                mlflow.log_param("context_length", self.context_length)
+                mlflow.log_param("in_context_probability", self.icp)
+                mlflow.log_param("margin", self.margin)
+                mlflow.log_param("alpha", self.alpha)
+                mlflow.log_param("lora", self.lora)
+                mlflow.log_param("optimizer_name", self.optimizer_name)
+                mlflow.log_param("lr_end_factor", self.lr_end_factor)
+                mlflow.log_param("train_size", self.train_size)
+                mlflow.log_param("batch_size", self.batch_size)
+                mlflow.log_param("param_count", total_params)
 
-            train_loader = DataLoader(self.train_dataset, batch_size=self.batch_size, shuffle=True, collate_fn=collate_triplet)
-            val_loader = DataLoader(self.val_dataset, batch_size=self.batch_size, shuffle=False, collate_fn=collate_triplet)
-            accelerator = Accelerator()
-            device = accelerator.device
-            self.model, self.optimizer, train_loader, val_loader, self.lr_scheduler = accelerator.prepare(
+            train_loader = DataLoader(
+                self.train_dataset,
+                batch_size=self.batch_size,
+                shuffle=True,
+                collate_fn=collate_triplet
+            )
+            val_loader = DataLoader(
+                self.val_dataset,
+                batch_size=self.batch_size,
+                shuffle=False,
+                collate_fn=collate_triplet
+            )
+            self.model, self.optimizer, train_loader, val_loader, self.lr_scheduler = self.accelerator.prepare(
                 self.model, self.optimizer, train_loader, val_loader, self.lr_scheduler
             )
 
+            best_val_loss: float = float('inf')
             tokenizer = self.model.tokenizer
             token_context_length: int = self.model.token_context_length
             for epoch in range(1, self.epochs + 1):
                 total_train_loss = 0.0
                 total_val_loss = 0.0
 
-                train_loop = tqdm(train_loader)
-                train_loop.set_description(f"Training [{epoch}/{self.epochs}]")
+                if self.accelerator.is_main_process:
+                    train_loop = tqdm(train_loader)
+                    train_loop.set_description(f"Training [{epoch}/{self.epochs}]")
+                else:
+                    train_loop = train_loader
+
                 train_iters = 0
                 self.model.train()
                 for anchors, positives, negatives, margins in train_loop:
+                    current_lr: float = self.optimizer.param_groups[0]["lr"]
                     train_iters += 1
-                    anchor_in = tokenizer(
-                        anchors,
-                        padding=True,
-                        truncation=True,
-                        max_length=token_context_length,
-                        return_tensors='pt'
-                    )
-                    positive_in = tokenizer(
-                        positives,
-                        padding=True,
-                        truncation=True,
-                        max_length=token_context_length,
-                        return_tensors='pt'
-                    )
-                    negative_in = tokenizer(
-                        negatives,
-                        padding=True,
-                        truncation=True,
-                        max_length=token_context_length,
-                        return_tensors='pt'
-                    )
-
-                    anchor_tok = anchor_in['input_ids'].to(device)
-                    anchor_mask = anchor_in['attention_mask'].to(device)
-                    positive_tok = positive_in['input_ids'].to(device)
-                    positive_mask = positive_in['attention_mask'].to(device)
-                    negative_tok = negative_in['input_ids'].to(device)
-                    negative_mask = negative_in['attention_mask'].to(device)
 
                     self.optimizer.zero_grad()
-                    anchor_out = self.model(anchor_tok, anchor_mask)
-                    pos_out = self.model(positive_tok, positive_mask)
-                    neg_out = self.model(negative_tok, negative_mask)
-
-                    d_ap = torch.linalg.norm(anchor_out - pos_out, dim=-1)
-                    d_an = torch.linalg.norm(anchor_out - neg_out, dim=-1)
-                    loss = F.relu(d_ap - d_an + margins)
-                    loss = torch.mean(loss, dim=0)
+                    loss = self._one_step(anchors, positives, negatives, margins, tokenizer, token_context_length)
                     total_train_loss += loss.item()
                     avg_loss: float = total_train_loss / train_iters
-                    train_loop.set_postfix(loss=loss.item(), avg_loss=avg_loss)
-                    accelerator.backward(loss)
+
+                    if self.accelerator.is_main_process:
+                        train_loop.set_postfix(loss=loss.item(), avg_loss=avg_loss, lr=current_lr)
+
+                    self.accelerator.backward(loss)
                     self.optimizer.step()
                     self.lr_scheduler.step()
 
                 avg_train_loss: float = total_train_loss / train_iters
                 mlflow.log_metric("train_loss", avg_train_loss, step=epoch)
 
-                val_loop = tqdm(val_loader)
-                val_loop.set_description(f"Validation [{epoch}/{self.epochs}]")
+                # ---------------------------------
+                # Validation
+                # ---------------------------------
+                if self.accelerator.is_main_process:
+                    val_loop = tqdm(val_loader)
+                    val_loop.set_description(f"Validation [{epoch}/{self.epochs}]")
+                else:
+                    val_loop = val_loader
+
                 self.model.eval()
                 with torch.no_grad():
                     val_iters = 0
                     for anchors, positives, negatives, margins in val_loop:
                         val_iters += 1
-                        anchor_in = tokenizer(
-                            anchors,
-                            padding=True,
-                            truncation=True,
-                            max_length=token_context_length,
-                            return_tensors='pt'
-                        )
-                        positive_in = tokenizer(
-                            positives,
-                            padding=True,
-                            truncation=True,
-                            max_length=token_context_length,
-                            return_tensors='pt'
-                        )
-                        negative_in = tokenizer(
-                            negatives,
-                            padding=True,
-                            truncation=True,
-                            max_length=token_context_length,
-                            return_tensors='pt'
-                        )
-
-                        anchor_tok = anchor_in['input_ids'].to(device)
-                        anchor_mask = anchor_in['attention_mask'].to(device)
-                        positive_tok = positive_in['input_ids'].to(device)
-                        positive_mask = positive_in['attention_mask'].to(device)
-                        negative_tok = negative_in['input_ids'].to(device)
-                        negative_mask = negative_in['attention_mask'].to(device)
-
-                        anchor_out = self.model(anchor_tok, anchor_mask)
-                        pos_out = self.model(positive_tok, positive_mask)
-                        neg_out = self.model(negative_tok, negative_mask)
-
-                        d_ap = torch.linalg.norm(anchor_out - pos_out, dim=-1)
-                        d_an = torch.linalg.norm(anchor_out - neg_out, dim=-1)
-                        loss = F.relu(d_ap - d_an + margins)
-                        loss = torch.mean(loss, dim=0)
+                        loss = self._one_step(anchors, positives, negatives, margins, tokenizer, token_context_length)
                         total_val_loss += loss.item()
                         avg_loss: float = total_val_loss / val_iters
-                        val_loop.set_postfix(loss=loss.item(), avg_loss=avg_loss)
+                        if self.accelerator.is_main_process:
+                            val_loop.set_postfix(loss=loss.item(), avg_loss=avg_loss)
 
                     avg_val_loss: float = total_val_loss / val_iters
                     mlflow.log_metric("val_loss", avg_val_loss, step=epoch)
+
+                # Model saving
+                if self.accelerator.is_main_process:
+                    torch.save({
+                        'optimizer': self.optimizer.state_dict(),
+                        'lr_scheduler': self.optimizer.state_dict(),
+                        'epoch': epoch
+                    }, run_path / "train_state.pth")
+                    torch.save({
+                        'model': self.model.state_dict(),
+                        'epoch': epoch,
+                    }, run_path / "model_last.pth")
+
+                    if avg_val_loss < best_val_loss:
+                        best_val_loss = avg_val_loss
+                        torch.save({
+                            'model': self.model.state_dict(),
+                            'epoch': epoch,
+                        }, run_path / "model_best.pth")
+
+                self.accelerator.wait_for_everyone()
+
+    def _one_step(
+        self,
+        anchors: list[str],
+        positives: list[str],
+        negatives: list[str],
+        margins: list[float],
+        tokenizer,
+        max_length: int,
+    ) -> torch.Tensor:
+        anchor_in = tokenizer(
+            anchors,
+            padding=True,
+            truncation=True,
+            max_length=max_length,
+            return_tensors='pt'
+        )
+        positive_in = tokenizer(
+            positives,
+            padding=True,
+            truncation=True,
+            max_length=max_length,
+            return_tensors='pt'
+        )
+        negative_in = tokenizer(
+            negatives,
+            padding=True,
+            truncation=True,
+            max_length=max_length,
+            return_tensors='pt'
+        )
+
+        anchor_tok = anchor_in['input_ids'].to(self.device)
+        anchor_mask = anchor_in['attention_mask'].to(self.device)
+        positive_tok = positive_in['input_ids'].to(self.device)
+        positive_mask = positive_in['attention_mask'].to(self.device)
+        negative_tok = negative_in['input_ids'].to(self.device)
+        negative_mask = negative_in['attention_mask'].to(self.device)
+
+        anchor_out = self.model(anchor_tok, anchor_mask)
+        pos_out = self.model(positive_tok, positive_mask)
+        neg_out = self.model(negative_tok, negative_mask)
+
+        d_ap = torch.linalg.norm(anchor_out - pos_out, dim=-1)
+        d_an = torch.linalg.norm(anchor_out - neg_out, dim=-1)
+        loss = F.relu(d_ap - d_an + margins)
+        loss = torch.mean(loss, dim=0)
+
+        return loss
 
 
 def main():

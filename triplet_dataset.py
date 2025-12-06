@@ -29,6 +29,7 @@ def load_and_split(files: list[Path], train_size: float = 0.85) -> DatasetDict:
         "val": val_dataset,
     })
 
+
 def collate_triplet(batch: list[tuple[str, str, str, float]]) -> tuple[list[str], list[str], list[str], torch.Tensor]:
     anchors = [x[0] for x in batch]
     positives = [x[1] for x in batch]
