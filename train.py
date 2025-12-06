@@ -17,17 +17,18 @@ from torch.optim.lr_scheduler import LRScheduler, LinearLR
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
+from loss import triplet_loss
 from model import MessageEmbeddingModel
 from triplet_dataset import TripletDataset, collate_triplet, load_and_split
 
 
 class Trainer:
     def __init__(self) -> None:
-        self.accelerator = Accelerator()
         self.device: torch.device = self.accelerator.device
 
         self.create_argparser()
         self.read_args()
+        self.accelerator = Accelerator(mixed_precision=self.mixed_precision)
 
         self.train_dataset: TripletDataset
         self.val_dataset: TripletDataset
@@ -50,6 +51,7 @@ class Trainer:
         self.lora_rank: int = args.lora_rank
         self.lora_alpha: int = args.lora_alpha
         self.lora_dropout: float = args.lora_dropout
+        self.mixed_precision: Literal["no", "fp16", "bf16", "fp8"] = args.mixed_precision
         self.out_path: Path = args.out_path
         self.out_path.mkdir(exist_ok=True, parents=True)
         self.epochs: int = args.epochs
@@ -201,6 +203,13 @@ class Trainer:
             type=float,
             default=0.05,
             help="Dropout parameter of LoRA.",
+        )
+        self.parser.add_argument(
+            ["--mixed_precision", "--mp"],
+            type=str,
+            default="no",
+            choices=["no", "fp16", "bf16", "fp8"],
+            help="The mixed precision type to use.",
         )
         self.parser.add_argument(
             '--out_path',
@@ -506,11 +515,7 @@ class Trainer:
         anchor_out = self.model(anchor_tok, anchor_mask)
         pos_out = self.model(positive_tok, positive_mask)
         neg_out = self.model(negative_tok, negative_mask)
-
-        d_ap = torch.linalg.norm(anchor_out - pos_out, dim=-1)
-        d_an = torch.linalg.norm(anchor_out - neg_out, dim=-1)
-        loss = F.relu(d_ap - d_an + margins)
-        loss = torch.mean(loss, dim=0)
+        loss = triplet_loss(anchor_out, pos_out, neg_out, margins)
 
         return loss
 
