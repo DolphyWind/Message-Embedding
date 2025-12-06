@@ -283,6 +283,7 @@ class Trainer:
     def train(self) -> None:
         # TODO: Load train state if continue_from is given
         # TODO: Implement LoRA
+        # TODO: Pre-tokenize the dataset and pad them in collate_triplet
 
         if self.accelerator.is_main_process:
             mlflow.set_experiment(self.experiment_name)
@@ -337,14 +338,17 @@ class Trainer:
             tokenizer = self.model.tokenizer
             token_context_length: int = self.model.token_context_length
             for epoch in range(1, self.epochs + 1):
-                total_train_loss = 0.0
-                total_val_loss = 0.0
-
+                # ---------------------------------
+                # Train
+                # ---------------------------------
                 if self.accelerator.is_main_process:
                     train_loop = tqdm(train_loader)
                     train_loop.set_description(f"Training [{epoch}/{self.epochs}]")
                 else:
                     train_loop = train_loader
+
+                total_train_loss: float = 0.0
+                train_losses: list[float] = []
 
                 train_iters = 0
                 self.model.train()
@@ -354,6 +358,7 @@ class Trainer:
 
                     self.optimizer.zero_grad()
                     loss = self._one_step(anchors, positives, negatives, margins, tokenizer, token_context_length)
+                    train_losses.append(loss.item())
                     total_train_loss += loss.item()
                     avg_loss: float = total_train_loss / train_iters
 
@@ -364,8 +369,11 @@ class Trainer:
                     self.optimizer.step()
                     self.lr_scheduler.step()
 
-                avg_train_loss: float = total_train_loss / train_iters
-                mlflow.log_metric("train_loss", avg_train_loss, step=epoch)
+                losses_tensor: torch.Tensor = torch.tensor(train_losses, device=self.accelerator.device)
+                losses_gathered: torch.Tensor = self.accelerator.gather(losses_tensor)
+                if self.accelerator.is_main_process:
+                    avg_train_loss: float = losses_gathered.mean().item()
+                    mlflow.log_metric("train_loss", avg_train_loss, step=epoch)
 
                 # ---------------------------------
                 # Validation
@@ -376,6 +384,9 @@ class Trainer:
                 else:
                     val_loop = val_loader
 
+                total_val_loss: float = 0.0
+                val_losses: list[float] = []
+
                 self.model.eval()
                 with torch.no_grad():
                     val_iters = 0
@@ -383,14 +394,20 @@ class Trainer:
                         val_iters += 1
                         loss = self._one_step(anchors, positives, negatives, margins, tokenizer, token_context_length)
                         total_val_loss += loss.item()
+                        val_losses.append(loss.item())
                         avg_loss: float = total_val_loss / val_iters
                         if self.accelerator.is_main_process:
                             val_loop.set_postfix(loss=loss.item(), avg_loss=avg_loss)
 
-                    avg_val_loss: float = total_val_loss / val_iters
-                    mlflow.log_metric("val_loss", avg_val_loss, step=epoch)
+                    val_losses_tensor: torch.Tensor = torch.tensor(val_losses, device=self.accelerator.device)
+                    val_losses_gathered: torch.Tensor = self.accelerator.gather(val_losses_tensor)
+                    if self.accelerator.is_main_process:
+                        avg_val_loss: float = val_losses_gathered.mean().item()
+                        mlflow.log_metric("val_loss", avg_val_loss, step=epoch)
 
+                # ---------------------------------
                 # Model saving
+                # ---------------------------------
                 if self.accelerator.is_main_process:
                     torch.save({
                         'optimizer': self.optimizer.state_dict(),
