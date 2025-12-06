@@ -3,7 +3,7 @@ from contextlib import nullcontext
 import math
 import os
 from pathlib import Path
-from typing import Literal, Optional
+from typing import Literal, Optional, Any
 
 from accelerate import Accelerator
 from datasets import DatasetDict
@@ -27,6 +27,16 @@ class Trainer:
         self.device: torch.device = self.accelerator.device
 
         self.create_argparser()
+        self.read_args()
+
+        self.train_dataset: TripletDataset
+        self.val_dataset: TripletDataset
+        self.model: MessageEmbeddingModel
+        self.optimizer: optim.Optimizer
+        self.lr_scheduler: LRScheduler
+        self.lora_config: dict[str, Any]
+
+    def read_args(self):
         args = self.parser.parse_args()
         self.base_model_name: str = args.base_model
         self.pooling_mode: Literal['mean', 'attention'] = args.pooling_mode
@@ -37,6 +47,9 @@ class Trainer:
         self.lr_ft: float = args.lr_ft
         self.lr_base: float = args.lr_base
         self.lora: bool = args.lora
+        self.lora_rank: int = args.lora_rank
+        self.lora_alpha: int = args.lora_alpha
+        self.lora_dropout: float = args.lora_dropout
         self.out_path: Path = args.out_path
         self.out_path.mkdir(exist_ok=True, parents=True)
         self.epochs: int = args.epochs
@@ -55,12 +68,13 @@ class Trainer:
 
         self.experiment_path: Path = self.out_path / self.experiment_name
         self.experiment_path.mkdir(exist_ok=True, parents=True)
-
-        self.train_dataset: TripletDataset
-        self.val_dataset: TripletDataset
-        self.model: MessageEmbeddingModel
-        self.optimizer: optim.Optimizer
-        self.lr_scheduler: LRScheduler
+        self.lora_config: dict[str, Any] = {
+            "r": self.lora_rank,
+            "lora_alpha": self.lora_alpha,
+            "target_modules": ["query", "key", "value", "output.dense"],
+            "bias": "none",
+            "lora_dropout": self.lora_dropout,
+        }
 
     def init_model(self):
         sqlite_path: Path = self.experiment_path / 'mlflow.db'
@@ -73,6 +87,7 @@ class Trainer:
 
         files: list[Path] = [p for p in self.data_path.glob('*.parquet')]
         dataset: DatasetDict = load_and_split(files, self.train_size)
+
         self.train_dataset = TripletDataset(
             dataset['train'],
             context_len=self.context_length,
@@ -89,8 +104,10 @@ class Trainer:
         )
         self.model = MessageEmbeddingModel(
             base_model=self.base_model_name,
-            pooling_mode=self.pooling_mode,
             message_context_length=self.context_length,
+            pooling_mode=self.pooling_mode,
+            use_lora=self.lora,
+            lora_config=self.lora_config,
         )
         self.optimizer = self.get_new_optimizer()
         steps_per_epoch: int = math.ceil(len(self.train_dataset) / self.batch_size)
@@ -166,6 +183,24 @@ class Trainer:
             '--lora',
             action='store_true',
             help="Use LoRa (https://arxiv.org/abs/2106.09685) for fine-tuning.",
+        )
+        self.parser.add_argument(
+            "--lora_rank",
+            type=int,
+            default=8,
+            help="Rank parameter of LoRA.",
+        )
+        self.parser.add_argument(
+            "--lora_alpha",
+            type=int,
+            default=16,
+            help="Alpha parameter of LoRA. It is recommended to keep alpha/rank \\in O(1)",
+        )
+        self.parser.add_argument(
+            "--lora_dropout",
+            type=float,
+            default=0.05,
+            help="Dropout parameter of LoRA.",
         )
         self.parser.add_argument(
             '--out_path',
@@ -282,8 +317,8 @@ class Trainer:
 
     def train(self) -> None:
         # TODO: Load train state if continue_from is given
-        # TODO: Implement LoRA
         # TODO: Pre-tokenize the dataset and pad them in collate_triplet
+        # TODO: InfoNCE dataset and loss
 
         if self.accelerator.is_main_process:
             mlflow.set_experiment(self.experiment_name)
@@ -295,6 +330,7 @@ class Trainer:
             ctx = nullcontext()
 
         with ctx as run:
+            run_path: Path = Path()
             if self.accelerator.is_main_process:
                 self.run_name = self.run_name or run.data.tags.get("mlflow.runName")
                 run_path: Path = self.experiment_path / self.run_name
@@ -385,6 +421,7 @@ class Trainer:
                     val_loop = val_loader
 
                 total_val_loss: float = 0.0
+                avg_val_loss: float = float('inf')
                 val_losses: list[float] = []
 
                 self.model.eval()

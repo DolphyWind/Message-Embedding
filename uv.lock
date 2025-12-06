@@ -1495,8 +1495,11 @@ dependencies = [
     { name = "fastparquet" },
     { name = "lion-pytorch" },
     { name = "mlflow" },
+    { name = "nvidia-ml-py" },
     { name = "pandas" },
     { name = "parquet" },
+    { name = "peft" },
+    { name = "pyrsmi" },
     { name = "sentence-transformers" },
     { name = "spacy" },
     { name = "torch" },
@@ -1511,8 +1514,11 @@ requires-dist = [
     { name = "fastparquet", specifier = ">=2024.11.0" },
     { name = "lion-pytorch", specifier = ">=0.2.3" },
     { name = "mlflow", specifier = ">=3.6.0" },
+    { name = "nvidia-ml-py", specifier = ">=13.580.82" },
     { name = "pandas", specifier = ">=2.3.3" },
     { name = "parquet", specifier = ">=1.3.1" },
+    { name = "peft", specifier = ">=0.18.0" },
+    { name = "pyrsmi", specifier = ">=1.1.0" },
     { name = "sentence-transformers", specifier = ">=5.1.2" },
     { name = "spacy", specifier = ">=3.8.7" },
     { name = "torch", specifier = ">=2.8.0" },
@@ -1920,6 +1926,15 @@ wheels = [
 ]
 
 [[package]]
+name = "nvidia-ml-py"
+version = "13.580.82"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/dd/6c/4a533f2c0185027c465adb6063086bc3728301e95f483665bfa9ebafb2d3/nvidia_ml_py-13.580.82.tar.gz", hash = "sha256:0c028805dc53a0e2a6985ea801888197765ac2ef8f1c9e29a7bf0d3616a5efc7", size = 47999, upload-time = "2025-09-11T16:44:56.267Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/7f/96/d6d25a4c307d6645f4a9b91d620c0151c544ad38b5e371313a87d2761004/nvidia_ml_py-13.580.82-py3-none-any.whl", hash = "sha256:4361db337b0c551e2d101936dae2e9a60f957af26818e8c0c3a1f32b8db8d0a7", size = 49008, upload-time = "2025-09-11T16:44:54.915Z" },
+]
+
+[[package]]
 name = "nvidia-nccl-cu12"
 version = "2.27.3"
 source = { registry = "https://pypi.org/simple" }
@@ -2061,6 +2076,27 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/39/06/56482f6834135a67dfc5a2bfce071a75be5c8c91edd8e319d69eb56b4644/parquet-1.3.1.tar.gz", hash = "sha256:fb1c90768c1b9159d4d6a9b3112ea8107b0b46d7491c5ac452ba7350f333bf0a", size = 23081, upload-time = "2020-04-30T01:06:40.195Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/14/a6/d57a2fe5caac3e0e0cdb78c0e450f30f953a590ecf94478065f33feb3d8f/parquet-1.3.1-py3-none-any.whl", hash = "sha256:a492a08643b51af8b4c2a25d97e1667170a483fc68ca408979b080ae9d771f51", size = 24579, upload-time = "2020-04-30T01:06:39.057Z" },
+]
+
+[[package]]
+name = "peft"
+version = "0.18.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "accelerate" },
+    { name = "huggingface-hub" },
+    { name = "numpy" },
+    { name = "packaging" },
+    { name = "psutil" },
+    { name = "pyyaml" },
+    { name = "safetensors" },
+    { name = "torch" },
+    { name = "tqdm" },
+    { name = "transformers" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/4b/0c/f2938db546ac7fc961ab5917cd50fcf5d0d70b406de93e3faccaa504e152/peft-0.18.0.tar.gz", hash = "sha256:c81c80b2056ab40c23d58ef25f74daab417ac653970718589a11a8af28218588", size = 634141, upload-time = "2025-11-13T11:13:06.603Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/0f/55/481bf25613d40ef53534f664deba7b138fe566356b6ca10304e2b3b2529c/peft-0.18.0-py3-none-any.whl", hash = "sha256:624f69ca6393b765ccc6734adda7ca57d80b238f0900a42c357d8b67a03d62ff", size = 556427, upload-time = "2025-11-13T11:13:03.664Z" },
 ]
 
 [[package]]
@@ -2438,6 +2474,15 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/f2/a5/181488fc2b9d093e3972d2a472855aae8a03f000592dbfce716a512b3359/pyparsing-3.2.5.tar.gz", hash = "sha256:2df8d5b7b2802ef88e8d016a2eb9c7aeaa923529cd251ed0fe4608275d4105b6", size = 1099274, upload-time = "2025-09-21T04:11:06.277Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/10/5e/1aa9a93198c6b64513c9d7752de7422c06402de6600a8767da1524f9570b/pyparsing-3.2.5-py3-none-any.whl", hash = "sha256:e38a4f02064cf41fe6593d328d0512495ad1f3d8a91c4f73fc401b3079a59a5e", size = 113890, upload-time = "2025-09-21T04:11:04.117Z" },
+]
+
+[[package]]
+name = "pyrsmi"
+version = "1.1.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/5d/96/343863a8f82412cd0cb6e2dfc819a25f2d61df7a6df766ad097168018ae1/pyrsmi-1.1.0.tar.gz", hash = "sha256:083fc733310f6b310eb680d31e51dfb556000d27a1bc1ab6864e1a2813ea7b8b", size = 64343, upload-time = "2025-12-03T08:42:50.335Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/cb/35/8b1280cd3619c47103686533c0e1e908f20976e6b5e07a1a52ffb46a70ed/pyrsmi-1.1.0-py2.py3-none-any.whl", hash = "sha256:80545fb7181a41a04928d68e99ff16fc3d0519501290da310727b82e5980b664", size = 22384, upload-time = "2025-12-03T08:42:49.133Z" },
 ]
 
 [[package]]
