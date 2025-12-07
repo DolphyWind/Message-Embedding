@@ -58,7 +58,7 @@ class Trainer:
         self.weight_decay: float = args.weight_decay
         self.experiment_name: str = args.experiment_name
         self.run_name: str = args.run_name
-        self.continue_from: Optional[Path] = None if not args.continue_from else Path(args.continue_from)
+        self.continue_from: Optional[Path] = None if args.continue_from is None else Path(args.continue_from)
         self.lr_end_factor: float = args.lr_end_factor
         self.data_path: Path = args.data_path
         self.train_size: float = args.train_size
@@ -254,7 +254,7 @@ class Trainer:
         self.parser.add_argument(
             '--continue_from',
             type=str,
-            default='',
+            default=None,
             help="Path to continue training from."
         )
         self.parser.add_argument(
@@ -325,7 +325,6 @@ class Trainer:
 
     def train(self) -> None:
         # TODO: Load train state if continue_from is given
-        # TODO: Pre-tokenize the dataset and pad them in collate_triplet
         # TODO: InfoNCE dataset and loss
 
         if self.accelerator.is_main_process:
