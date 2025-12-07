@@ -4,6 +4,7 @@ import math
 import os
 from pathlib import Path
 from typing import Literal, Optional, Any
+import warnings
 
 from accelerate import Accelerator
 from datasets import DatasetDict
@@ -25,10 +26,15 @@ from triplet_dataset import TripletDataset, collate_triplet, load_and_split
 class Trainer:
     def __init__(self) -> None:
         self.create_argparser()
-        self.read_args()
-        self.accelerator = Accelerator(mixed_precision=self.mixed_precision)
-        self.device: torch.device = self.accelerator.device
+        args = self.parser.parse_args()
+        self.read_args(args)
+        self.init_epoch: int = 1
+        self.best_val_loss: float = float('inf')
+        self.resuming_training: bool = False
+        self.run_id: Optional[str] = None
 
+        self.accelerator: Accelerator
+        self.device: torch.device
         self.train_dataset: TripletDataset
         self.val_dataset: TripletDataset
         self.model: MessageEmbeddingModel
@@ -36,8 +42,8 @@ class Trainer:
         self.lr_scheduler: LRScheduler
         self.lora_config: dict[str, Any]
 
-    def read_args(self):
-        args = self.parser.parse_args()
+    def read_args(self, args):
+        self.args = args
         self.base_model_name: str = args.base_model
         self.pooling_mode: Literal['mean', 'attention'] = args.pooling_mode
         self.context_length: int = args.context_length
@@ -67,8 +73,14 @@ class Trainer:
         self.mlflow_username: str = args.mlflow_username
         self.mlflow_password: str = args.mlflow_password
 
-        self.experiment_path: Path = self.out_path / self.experiment_name
-        self.experiment_path.mkdir(exist_ok=True, parents=True)
+        if not self.continue_from:
+            if not self.base_model_name:
+                self.parser.error("--base_model is required.")
+            if not self.experiment_name:
+                self.parser.error("--experiment_name is required.")
+
+            self.experiment_path: Path = self.out_path / self.experiment_name
+            self.experiment_path.mkdir(exist_ok=True, parents=True)
         self.lora_config: dict[str, Any] = {
             "r": self.lora_rank,
             "lora_alpha": self.lora_alpha,
@@ -78,8 +90,30 @@ class Trainer:
         }
 
     def init_model(self):
-        sqlite_path: Path = self.experiment_path / 'mlflow.db'
+        cf: Optional[Path] = self.continue_from
+        train_state_path: Optional[Path] = cf / "train_state.pth" if cf else None
+
+        if cf is not None:
+            assert train_state_path is not None
+            self.resuming_training = True
+
+            if train_state_path.exists():
+                train_state = torch.load(train_state_path, weights_only=False)
+                self.args = train_state["args"]
+                self.read_args(self.args)
+                self.init_epoch = train_state["epoch"] + 1
+                self.run_id = train_state["run_id"]
+            else:
+                warnings.warn(
+                    "No train state file found, training a new model with current config instead!",
+                    category=UserWarning,
+                )
+
+        self.accelerator = Accelerator(mixed_precision=self.mixed_precision)
+        self.device: torch.device = self.accelerator.device
+
         if not self.mlflow_uri:
+            sqlite_path: Path = self.experiment_path / 'mlflow.db'
             mlflow.set_tracking_uri(f'sqlite:///{sqlite_path.absolute()}')
         else:
             os.environ['MLFLOW_TRACKING_URI'] = self.mlflow_uri
@@ -119,6 +153,31 @@ class Trainer:
             total_iters=self.epochs * steps_per_epoch
         )
 
+        if cf is not None:
+            assert train_state_path is not None
+
+            if train_state_path.exists():
+                train_state = torch.load(train_state_path, weights_only=False)
+                self.optimizer.load_state_dict(train_state["optimizer"])
+                self.lr_scheduler.load_state_dict(train_state["lr_scheduler"])
+
+                last_model_path: Path = cf / "model_last.pth"
+                best_model_path: Path = cf / "model_best.pth"
+
+                if last_model_path.exists():
+                    model_state: dict[str, Any] = torch.load(last_model_path)
+                    self.model.load_state_dict(model_state["model"])
+                    self.best_val_loss: float = model_state["val_loss"]  # Fallback if model_best.pth does not exists
+                else:
+                    warnings.warn(
+                        "No last model found! Training from random weights from the first epoch instead!",
+                        category=UserWarning,
+                    )
+                    self.init_epoch = 1
+
+                if best_model_path.exists():
+                    self.best_val_loss: float = torch.load(best_model_path)["val_loss"]
+
     def create_argparser(self) -> None:
         self.parser: ArgumentParser = ArgumentParser(
             description="Fine-tuning script for Botphy's memories extension."
@@ -126,12 +185,13 @@ class Trainer:
         self.parser.add_argument(
             '--base_model',
             type=str,
-            required=True,
+            # required=True,
             choices=[
                 'TURKCELL/roberta-base-turkish-uncased',
                 'dbmdz/bert-base-turkish-128k-uncased',
                 'emrecan/bert-base-turkish-cased-mean-nli-stsb-tr',
             ],
+            default=None,
             help="Model name to finetune.",
         )
         self.parser.add_argument(
@@ -242,7 +302,8 @@ class Trainer:
         self.parser.add_argument(
             '--experiment_name',
             type=str,
-            required=True,
+            # required=True,
+            default=None,
             help="The name of the experiment.",
         )
         self.parser.add_argument(
@@ -324,24 +385,24 @@ class Trainer:
             raise NotImplementedError()
 
     def train(self) -> None:
-        # TODO: Load train state if continue_from is given
+        # TODO: Integrate MLFlow traces
         # TODO: InfoNCE dataset and loss
-
         if self.accelerator.is_main_process:
             mlflow.set_experiment(self.experiment_name)
             extra_run_kwargs = {}
             if self.run_name:
-                extra_run_kwargs = {'run_name': self.run_name}
-            ctx = mlflow.start_run(log_system_metrics=True, **extra_run_kwargs)
+                extra_run_kwargs |= {'run_name': self.run_name}
+            ctx = mlflow.start_run(log_system_metrics=True, run_id=self.run_id, **extra_run_kwargs)
         else:
             ctx = nullcontext()
 
         with ctx as run:
+            self.run_id = run.info.run_id if run else self.run_id
             run_path: Path = Path()
             if self.accelerator.is_main_process:
                 self.run_name = self.run_name or run.data.tags.get("mlflow.runName")
                 run_path: Path = self.experiment_path / self.run_name
-                run_path.mkdir(exist_ok=False)
+                run_path.mkdir(exist_ok=self.resuming_training)
 
                 total_params: int = sum([p.numel() for p in self.model.parameters()])
                 print(f"Model has {total_params} parameters.")
@@ -377,10 +438,9 @@ class Trainer:
                 self.model, self.optimizer, train_loader, val_loader, self.lr_scheduler
             )
 
-            best_val_loss: float = float('inf')
             tokenizer = self.model.tokenizer
             token_context_length: int = self.model.token_context_length
-            for epoch in range(1, self.epochs + 1):
+            for epoch in range(self.init_epoch, self.epochs + 1):
                 # ---------------------------------
                 # Train
                 # ---------------------------------
@@ -452,24 +512,13 @@ class Trainer:
                 # ---------------------------------
                 # Model saving
                 # ---------------------------------
-                if self.accelerator.is_main_process:
-                    torch.save({
-                        'optimizer': self.optimizer.state_dict(),
-                        'lr_scheduler': self.optimizer.state_dict(),
-                        'epoch': epoch
-                    }, run_path / "train_state.pth")
-                    torch.save({
-                        'model': self.model.state_dict(),
-                        'epoch': epoch,
-                    }, run_path / "model_last.pth")
 
-                    if avg_val_loss < best_val_loss:
-                        best_val_loss = avg_val_loss
-                        torch.save({
-                            'model': self.model.state_dict(),
-                            'epoch': epoch,
-                        }, run_path / "model_best.pth")
-
+                self.save_model(
+                    run_path=run_path,
+                    epoch=epoch,
+                    val_loss=avg_val_loss,
+                )
+                self.best_val_loss = min(self.best_val_loss, avg_val_loss)
                 self.accelerator.wait_for_everyone()
 
     def _one_step(
@@ -477,7 +526,7 @@ class Trainer:
         anchors: list[str],
         positives: list[str],
         negatives: list[str],
-        margins: list[float],
+        margins: torch.Tensor,
         tokenizer,
         max_length: int,
     ) -> torch.Tensor:
@@ -516,6 +565,35 @@ class Trainer:
         loss = triplet_loss(anchor_out, pos_out, neg_out, margins)
 
         return loss
+
+    def save_model(
+        self,
+        run_path: Path,
+        epoch: int,
+        val_loss: float,
+    ):
+        if not self.accelerator.is_main_process:
+            return
+
+        torch.save({
+            'optimizer': self.optimizer.state_dict(),
+            'lr_scheduler': self.lr_scheduler.state_dict(),
+            'args': self.args,
+            'epoch': epoch,
+            'run_id': self.run_id,
+        }, run_path / "train_state.pth")
+        torch.save({
+            'model': self.model.state_dict(),
+            'epoch': epoch,
+            'val_loss': val_loss,
+        }, run_path / "model_last.pth")
+
+        if val_loss < self.best_val_loss:
+            torch.save({
+                'model': self.model.state_dict(),
+                'epoch': epoch,
+                'val_loss': val_loss,
+            }, run_path / "model_best.pth")
 
 
 def main():
