@@ -24,11 +24,10 @@ from triplet_dataset import TripletDataset, collate_triplet, load_and_split
 
 class Trainer:
     def __init__(self) -> None:
-        self.device: torch.device = self.accelerator.device
-
         self.create_argparser()
         self.read_args()
         self.accelerator = Accelerator(mixed_precision=self.mixed_precision)
+        self.device: torch.device = self.accelerator.device
 
         self.train_dataset: TripletDataset
         self.val_dataset: TripletDataset
@@ -205,7 +204,7 @@ class Trainer:
             help="Dropout parameter of LoRA.",
         )
         self.parser.add_argument(
-            ["--mixed_precision", "--mp"],
+            "--mixed_precision", "--mp",
             type=str,
             default="no",
             choices=["no", "fp16", "bf16", "fp8"],
