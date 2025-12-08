@@ -1,4 +1,4 @@
-from typing import Any, Literal
+from typing import Any, Literal, Optional
 
 from peft import LoraConfig, get_peft_model
 import torch
@@ -14,17 +14,17 @@ class MessageEmbeddingModel(nn.Module):
         message_context_length: int,
         pooling_mode: Literal['mean', 'attention'] = 'mean',
         use_lora: bool = False,
-        lora_config: dict[str, Any] = {},
+        lora_config: Optional[dict[str, Any]] = None,
     ) -> None:
         super().__init__()
 
-        self._base: AutoModel = AutoModel.from_pretrained(base_model)
+        self._base = AutoModel.from_pretrained(base_model)
         self._tokenizer = AutoTokenizer.from_pretrained(base_model)
         self._pooling_mode: Literal['mean', 'attention'] = pooling_mode
-        self._embedding_dim: float = self._base.config.hidden_size
+        self._embedding_dim: int = self._base.config.hidden_size
         self._message_context_length: int = message_context_length
         self._use_lora: bool = use_lora
-        self._lora_config: dict[str, Any] = lora_config
+        self._lora_config: dict[str, Any] = {} if lora_config is None else lora_config
         # https://stackoverflow.com/questions/76547541/huggingface-how-do-i-find-the-max-length-of-a-model#comment136833899_77286207
         # self.token_context_length: int = self._tokenizer.model_max_length
         # self.token_context_length: int = self._base.config.max_position_embeddings
@@ -35,11 +35,12 @@ class MessageEmbeddingModel(nn.Module):
         self._num_new_tokens: int = self._tokenizer.add_tokens(new_tokens)
         self._base.resize_token_embeddings(len(self._tokenizer))
 
-        self.adapter = NewTokenEmbeddingAdapter(new_tokens.__len__(), self._base.config.hidden_size)
+        self.adapter = NewTokenEmbeddingAdapter(
+            new_tokens.__len__(),
+            self._base.config.hidden_size,
+        )
         if self._pooling_mode == 'attention':
             self.attention_query: nn.Linear = nn.Linear(self._embedding_dim, 1)
-
-        self._base = WrappedModel(self._base, self.adapter, self._old_vocab_size)
 
         if self._use_lora:
             config = LoraConfig(
@@ -47,9 +48,16 @@ class MessageEmbeddingModel(nn.Module):
             )
             self._base = get_peft_model(self._base, config)
 
-    def forward(self, x, attn_mask, *args, **kwargs):
-        last_hidden_state = self._base(x, *args, attention_mask=attn_mask, **kwargs).last_hidden_state
-        pooler_out = self.pool(last_hidden_state, attn_mask)
+        self._base = WrappedModel(self._base, self.adapter, self._old_vocab_size)
+
+    def forward(self, input_ids, attention_mask, *args, **kwargs):
+        last_hidden_state = self._base(
+            input_ids,
+            *args,
+            attention_mask=attention_mask,
+            **kwargs
+        ).last_hidden_state
+        pooler_out = self.pool(last_hidden_state, attention_mask)
         return pooler_out
 
     def pool(self, x, attn_mask):
@@ -72,14 +80,14 @@ class MessageEmbeddingModel(nn.Module):
 
     def get_param_groups(self) -> dict[str, Any]:
         # input_embeddings = self._base.get_input_embeddings()
-        old_params = [p for n, p in self._base.named_parameters() if 'adapter' not in n]
-        new_params = list(self.adapter.parameters())
+        base_model_params = [p for n, p in self._base.named_parameters()]
+        additional_params = []  # list(self.adapter.parameters())
         if self._pooling_mode == 'attention':
-            new_params.extend(self.attention_query.parameters())
+            additional_params.extend(self.attention_query.parameters())
 
         return {
-            'old': old_params,
-            'new': new_params
+            'base': base_model_params,
+            'additional': additional_params
         }
 
     @property
@@ -90,7 +98,10 @@ class MessageEmbeddingModel(nn.Module):
 class NewTokenEmbeddingAdapter(torch.nn.Module):
     def __init__(self, num_new_tokens: int, d_model: int):
         super().__init__()
-        self.new_emb: nn.Embedding = nn.Embedding(num_new_tokens, d_model)
+        self.new_emb: nn.Embedding = nn.Embedding(
+            num_new_tokens,
+            d_model,
+        )
 
     def forward(self, new_token_ids: torch.Tensor):
         return self.new_emb(new_token_ids)

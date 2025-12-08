@@ -365,12 +365,12 @@ class Trainer:
         param_groups: dict[str, Any] = self.model.get_param_groups()
         optim_input: list[dict[str, Any]] = [
             {
-                "params": param_groups['old'],
+                "params": param_groups['base'],
                 "lr": self.lr_ft,
                 "weight_decay": self.weight_decay,
             },
             {
-                "params": param_groups['new'],
+                "params": param_groups['additional'],
                 'lr': self.lr_base,
                 "weight_decay": self.weight_decay,
             }
@@ -387,6 +387,7 @@ class Trainer:
     def train(self) -> None:
         # TODO: Integrate MLFlow traces
         # TODO: InfoNCE dataset and loss
+        # TODO: Linear warmup + cos decay
         if self.accelerator.is_main_process:
             mlflow.set_experiment(self.experiment_name)
             extra_run_kwargs = {}
