@@ -416,10 +416,14 @@ class Trainer:
                 mlflow.log_param("margin", self.margin)
                 mlflow.log_param("alpha", self.alpha)
                 mlflow.log_param("lora", self.lora)
+                mlflow.log_param("lora_rank", self.lora_rank)
+                mlflow.log_param("lora_alpha", self.lora_alpha)
+                mlflow.log_param("lora_dropout", self.lora_dropout)
                 mlflow.log_param("optimizer_name", self.optimizer_name)
                 mlflow.log_param("lr_end_factor", self.lr_end_factor)
                 mlflow.log_param("train_size", self.train_size)
                 mlflow.log_param("batch_size", self.batch_size)
+                mlflow.log_param("mixed_precision", self.mixed_precision)
                 mlflow.log_param("param_count", total_params)
 
             train_loader = DataLoader(
