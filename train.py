@@ -14,7 +14,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
-from torch.optim.lr_scheduler import LRScheduler, LinearLR
+from torch.optim.lr_scheduler import LRScheduler, LambdaLR, LinearLR
+from lr_scheduling import LinearWarmupCosineDecay
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
@@ -65,6 +66,9 @@ class Trainer:
         self.experiment_name: str = args.experiment_name
         self.run_name: str = args.run_name
         self.continue_from: Optional[Path] = None if args.continue_from is None else Path(args.continue_from)
+        self.warmup_percentage: float = args.warmup_percentage
+        self.lr_scheduler_type: Literal["none", "linear", "lr_warm_cos_dec"] = args.lr_scheduler_type
+        self.lr_begin_factor: float = args.lr_begin_factor
         self.lr_end_factor: float = args.lr_end_factor
         self.data_path: Path = args.data_path
         self.train_size: float = args.train_size
@@ -72,6 +76,7 @@ class Trainer:
         self.mlflow_uri: str = args.mlflow_uri
         self.mlflow_username: str = args.mlflow_username
         self.mlflow_password: str = args.mlflow_password
+        self.num_workers: int = args.num_workers
 
         if not self.continue_from:
             if not self.base_model_name:
@@ -146,12 +151,30 @@ class Trainer:
         )
         self.optimizer = self.get_new_optimizer()
         steps_per_epoch: int = math.ceil(len(self.train_dataset) / self.batch_size)
-        self.lr_scheduler = LinearLR(
-            self.optimizer,
-            start_factor=1.0,
-            end_factor=self.lr_end_factor,
-            total_iters=self.epochs * steps_per_epoch
-        )
+        total_steps: int = self.epochs * steps_per_epoch
+        warmup_steps: int = int(self.warmup_percentage * total_steps)
+
+        match self.lr_scheduler_type:
+            case "none":
+                self.lr_scheduler = LambdaLR(
+                    self.optimizer,
+                    lambda _: 1.0
+                )
+            case "linear":
+                self.lr_scheduler = LinearLR(
+                    self.optimizer,
+                    start_factor=1.0,
+                    end_factor=self.lr_end_factor,
+                    total_iters=total_steps,
+                )
+            case "lr_warm_cos_dec":
+                self.lr_scheduler = LinearWarmupCosineDecay(
+                    self.optimizer,
+                    start_factor=self.lr_begin_factor,
+                    end_factor=self.lr_end_factor,
+                    warmup_steps=warmup_steps,
+                    total_steps=total_steps,
+                )
 
         if cf is not None:
             assert train_state_path is not None
@@ -319,10 +342,29 @@ class Trainer:
             help="Path to continue training from."
         )
         self.parser.add_argument(
-            '--lr_end_factor',
+            '--warmup_percentage',
+            type=float,
+            default=0.05,
+            help="Warmup percentage for linear warmup + cos decay scheduler. Unused otherwise."
+        )
+        self.parser.add_argument(
+            '--lr_scheduler_type',
+            type=str,
+            choices=["none", "linear", "lr_warm_cos_dec"],
+            default="linear",
+            help="Learning rate scheduler type.",
+        )
+        self.parser.add_argument(
+            '--lr_begin_factor',
             type=float,
             default=0.1,
-            help="End factor of the LinearLR"
+            help="Start factor for linear warmup + cos decay scheduler. Unused if LinearLR is used."
+        )
+        self.parser.add_argument(
+            '--lr_end_factor',
+            type=float,
+            default=0.01,
+            help="End factor of the LinearLR or linear warmup + cos decay schedulers."
         )
         self.parser.add_argument(
             '--data_path',
@@ -349,16 +391,22 @@ class Trainer:
             help="MLFlow URI. An SQLite database is used if not provided."
         )
         self.parser.add_argument(
-            "--mlflow_username",
+            '--mlflow_username',
             type=str,
             default='',
             help="MLFlow remote server username."
         )
         self.parser.add_argument(
-            "--mlflow_password",
+            '--mlflow_password',
             type=str,
             default='',
             help="MLFlow remote server password."
+        )
+        self.parser.add_argument(
+            '--num_workers',
+            type=int,
+            default=4,
+            help="Number of workers for the dataloader."
         )
 
     def get_new_optimizer(self) -> optim.Optimizer:
@@ -387,7 +435,7 @@ class Trainer:
     def train(self) -> None:
         # TODO: Integrate MLFlow traces
         # TODO: InfoNCE dataset and loss
-        # TODO: Linear warmup + cos decay
+        # TODO: Preprocess windowing
         if self.accelerator.is_main_process:
             mlflow.set_experiment(self.experiment_name)
             extra_run_kwargs = {}
@@ -431,13 +479,17 @@ class Trainer:
                 self.train_dataset,
                 batch_size=self.batch_size,
                 shuffle=True,
-                collate_fn=collate_triplet
+                collate_fn=collate_triplet,
+                num_workers=self.num_workers,
+                pin_memory=True,
             )
             val_loader = DataLoader(
                 self.val_dataset,
                 batch_size=self.batch_size,
                 shuffle=False,
-                collate_fn=collate_triplet
+                collate_fn=collate_triplet,
+                num_workers=self.num_workers,
+                pin_memory=True,
             )
             self.model, self.optimizer, train_loader, val_loader, self.lr_scheduler = self.accelerator.prepare(
                 self.model, self.optimizer, train_loader, val_loader, self.lr_scheduler
@@ -517,7 +569,6 @@ class Trainer:
                 # ---------------------------------
                 # Model saving
                 # ---------------------------------
-
                 self.save_model(
                     run_path=run_path,
                     epoch=epoch,
@@ -580,6 +631,7 @@ class Trainer:
         if not self.accelerator.is_main_process:
             return
 
+        unwrapped_model: MessageEmbeddingModel = self.accelerator.unwrap_model(self.model)
         torch.save({
             'optimizer': self.optimizer.state_dict(),
             'lr_scheduler': self.lr_scheduler.state_dict(),
@@ -588,7 +640,7 @@ class Trainer:
             'run_id': self.run_id,
         }, run_path / "train_state.pth")
         torch.save({
-            'model': self.model.state_dict(),
+            'model': unwrapped_model.state_dict(),
             'epoch': epoch,
             'val_loss': val_loss,
         }, run_path / "model_last.pth")
