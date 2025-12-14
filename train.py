@@ -451,7 +451,8 @@ class Trainer:
             if self.accelerator.is_main_process:
                 self.run_name = self.run_name or run.data.tags.get("mlflow.runName")
                 run_path: Path = self.experiment_path / self.run_name
-                run_path.mkdir(exist_ok=self.resuming_training)
+                is_empty: bool = not any(run_path.iterdir())
+                run_path.mkdir(exist_ok=self.resuming_training or is_empty)
 
                 total_params: int = sum([p.numel() for p in self.model.parameters()])
                 print(f"Model has {total_params} parameters.")
