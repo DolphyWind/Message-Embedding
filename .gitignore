@@ -12,6 +12,6 @@ wheels/
 # Custom
 *.db
 *.parquet
-preprocessing/*
+private/*
 results/
 train.sh

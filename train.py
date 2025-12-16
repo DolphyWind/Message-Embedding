@@ -18,10 +18,11 @@ from torch.optim.lr_scheduler import LRScheduler, LambdaLR, LinearLR
 from lr_scheduling import LinearWarmupCosineDecay
 from torch.utils.data import DataLoader
 from tqdm import tqdm
+from datetime import datetime
 
 from loss import triplet_loss
 from model import MessageEmbeddingModel
-from triplet_dataset import TripletDataset, collate_triplet, load_and_split
+from triplet_dataset import TripletDataset, eval_group, load_and_split, collate_triplet
 
 
 class Trainer:
@@ -48,9 +49,10 @@ class Trainer:
         self.base_model_name: str = args.base_model
         self.pooling_mode: Literal['mean', 'attention'] = args.pooling_mode
         self.context_length: int = args.context_length
-        self.icp: float = args.icp
+        self.timestamp: Optional[str] = args.timestamp
         self.margin: float = args.margin
-        self.alpha: float = args.alpha
+        self.use_query_prob: float = args.use_query_prob
+        self.use_last_prob: float = args.use_last_prob
         self.lr_ft: float = args.lr_ft
         self.lr_base: float = args.lr_base
         self.lora: bool = args.lora
@@ -126,28 +128,35 @@ class Trainer:
             os.environ['MLFLOW_TRACKING_PASSWORD'] = self.mlflow_password
 
         files: list[Path] = [p for p in self.data_path.glob('*.parquet')]
-        dataset: DatasetDict = load_and_split(files, self.train_size)
+        dataset: DatasetDict = load_and_split(
+            files,
+            self.train_size,
+            timestamp=datetime.fromisoformat(self.timestamp) if self.timestamp else None
+        )
 
-        self.train_dataset = TripletDataset(
-            dataset['train'],
-            context_len=self.context_length,
-            in_context_probability=self.icp,
-            base_margin=self.margin,
-            alpha=self.alpha,
-        )
-        self.val_dataset = TripletDataset(
-            dataset['val'],
-            context_len=self.context_length,
-            in_context_probability=self.icp,
-            base_margin=self.margin,
-            alpha=self.alpha,
-        )
         self.model = MessageEmbeddingModel(
             base_model=self.base_model_name,
             message_context_length=self.context_length,
             pooling_mode=self.pooling_mode,
             use_lora=self.lora,
             lora_config=self.lora_config,
+        )
+        for k in dataset["train"]:
+            dataset["train"][k] = dataset["train"][k].map(eval_group, num_proc=self.num_workers)
+        for k in dataset["val"]:
+            dataset["val"][k] = dataset["val"][k].map(eval_group, num_proc=self.num_workers)
+
+        self.train_dataset = TripletDataset(
+            dataset['train'],
+            context_len=self.context_length,
+            use_query_prob=self.use_query_prob,
+            use_last_prob=self.use_last_prob,
+        )
+        self.val_dataset = TripletDataset(
+            dataset['val'],
+            context_len=self.context_length,
+            use_query_prob=self.use_query_prob,
+            use_last_prob=self.use_last_prob,
         )
         self.optimizer = self.get_new_optimizer()
         steps_per_epoch: int = math.ceil(len(self.train_dataset) / self.batch_size)
@@ -234,22 +243,28 @@ class Trainer:
             help='Window size for when sampling messages'
         )
         self.parser.add_argument(
-            '--icp', '--in_context_probability',
-            type=float,
-            default=0.05,
-            help="Probability of sampling the negative sentece within the context.",
+            "--timestamp",
+            type=str,
+            default=None,
+            help="A timestamp in ISO-8601 format. Used to include the data entries AFTER this timestamp.",
         )
         self.parser.add_argument(
             '--margin',
             type=float,
-            default=1.0,
+            default=0.3,
             help="Margin value. Ensures the positive sentence is this amount of closer to negative sentence by this amount. Please refer to https://arxiv.org/abs/1908.10084 section 3 for more details.",  # noqa
         )
         self.parser.add_argument(
-            '--alpha',
+            "--use_query_prob",
             type=float,
-            default=1.0,
-            help="Used when calculating the margin of negative sentences if they happen to be in context. Check triplet_dataset.py for more details.",  # noqa
+            default=0.6,
+            help="Probability of using the query as the anchor sentence."
+        )
+        self.parser.add_argument(
+            "--use_last_prob",
+            type=float,
+            default=0.25,
+            help="Probability of using the last sentence in group as the anchor sentence."
         )
         self.parser.add_argument(
             '--lr_ft',
@@ -325,7 +340,6 @@ class Trainer:
         self.parser.add_argument(
             '--experiment_name',
             type=str,
-            # required=True,
             default=None,
             help="The name of the experiment.",
         )
@@ -462,9 +476,7 @@ class Trainer:
                 mlflow.log_param("base_model_name", self.base_model_name)
                 mlflow.log_param("pooling_mode", self.pooling_mode)
                 mlflow.log_param("context_length", self.context_length)
-                mlflow.log_param("in_context_probability", self.icp)
                 mlflow.log_param("margin", self.margin)
-                mlflow.log_param("alpha", self.alpha)
                 mlflow.log_param("lora", self.lora)
                 mlflow.log_param("lora_rank", self.lora_rank)
                 mlflow.log_param("lora_alpha", self.lora_alpha)
@@ -513,12 +525,17 @@ class Trainer:
 
                 train_iters = 0
                 self.model.train()
-                for anchors, positives, negatives, margins in train_loop:
+                for anchors, positives, negatives in train_loop:
                     current_lr: float = self.optimizer.param_groups[0]["lr"]
                     train_iters += 1
 
                     self.optimizer.zero_grad()
-                    loss = self._one_step(anchors, positives, negatives, margins, tokenizer, token_context_length)
+                    loss = self._one_step(
+                        anchors,
+                        positives,
+                        negatives,
+                        token_context_length
+                    )
                     train_losses.append(loss.item())
                     total_train_loss += loss.item()
                     avg_loss: float = total_train_loss / train_iters
@@ -552,9 +569,9 @@ class Trainer:
                 self.model.eval()
                 with torch.no_grad():
                     val_iters = 0
-                    for anchors, positives, negatives, margins in val_loop:
+                    for anchors, positives, negatives in val_loop:
                         val_iters += 1
-                        loss = self._one_step(anchors, positives, negatives, margins, tokenizer, token_context_length)
+                        loss = self._one_step(anchors, positives, negatives, token_context_length)
                         total_val_loss += loss.item()
                         val_losses.append(loss.item())
                         avg_loss: float = total_val_loss / val_iters
@@ -580,28 +597,26 @@ class Trainer:
 
     def _one_step(
         self,
-        anchors: list[str],
-        positives: list[str],
-        negatives: list[str],
-        margins: torch.Tensor,
-        tokenizer,
+        anchors: dict[str, torch.Tensor],
+        positives: dict[str, torch.Tensor],
+        negatives: dict[str, torch.Tensor],
         max_length: int,
     ) -> torch.Tensor:
-        anchor_in = tokenizer(
+        anchor_in = self.model.tokenizer(
             anchors,
             padding=True,
             truncation=True,
             max_length=max_length,
             return_tensors='pt'
         )
-        positive_in = tokenizer(
+        positive_in = self.model.tokenizer(
             positives,
             padding=True,
             truncation=True,
             max_length=max_length,
             return_tensors='pt'
         )
-        negative_in = tokenizer(
+        negative_in = self.model.tokenizer(
             negatives,
             padding=True,
             truncation=True,
@@ -619,7 +634,7 @@ class Trainer:
         anchor_out = self.model(anchor_tok, anchor_mask)
         pos_out = self.model(positive_tok, positive_mask)
         neg_out = self.model(negative_tok, negative_mask)
-        loss = triplet_loss(anchor_out, pos_out, neg_out, margins)
+        loss = triplet_loss(anchor_out, pos_out, neg_out, self.margin)
 
         return loss
 
