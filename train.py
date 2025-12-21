@@ -51,8 +51,6 @@ class Trainer:
         self.context_length: int = args.context_length
         self.timestamp: Optional[str] = args.timestamp
         self.margin: float = args.margin
-        self.use_query_prob: float = args.use_query_prob
-        self.use_last_prob: float = args.use_last_prob
         self.lr_ft: float = args.lr_ft
         self.lr_base: float = args.lr_base
         self.lora: bool = args.lora
@@ -98,6 +96,13 @@ class Trainer:
 
     def init_model(self):
         cf: Optional[Path] = self.continue_from
+        if cf is None and self.run_name is not None:
+            run_path: Path = self.experiment_path / self.run_name
+            if run_path.exists() and any(run_path.iterdir()):
+                yn = input("A previous run already exists. Continue from that instead? [y/N]:")
+                if yn.lower() == 'y':
+                    cf = self.experiment_path / self.run_name
+
         train_state_path: Optional[Path] = cf / "train_state.pth" if cf else None
 
         if cf is not None:
@@ -149,14 +154,10 @@ class Trainer:
         self.train_dataset = TripletDataset(
             dataset['train'],
             context_len=self.context_length,
-            use_query_prob=self.use_query_prob,
-            use_last_prob=self.use_last_prob,
         )
         self.val_dataset = TripletDataset(
             dataset['val'],
             context_len=self.context_length,
-            use_query_prob=self.use_query_prob,
-            use_last_prob=self.use_last_prob,
         )
         self.optimizer = self.get_new_optimizer()
         steps_per_epoch: int = math.ceil(len(self.train_dataset) / self.batch_size)
@@ -253,18 +254,6 @@ class Trainer:
             type=float,
             default=0.3,
             help="Margin value. Ensures the positive sentence is this amount of closer to negative sentence by this amount. Please refer to https://arxiv.org/abs/1908.10084 section 3 for more details.",  # noqa
-        )
-        self.parser.add_argument(
-            "--use_query_prob",
-            type=float,
-            default=0.6,
-            help="Probability of using the query as the anchor sentence."
-        )
-        self.parser.add_argument(
-            "--use_last_prob",
-            type=float,
-            default=0.25,
-            help="Probability of using the last sentence in group as the anchor sentence."
         )
         self.parser.add_argument(
             '--lr_ft',
@@ -449,7 +438,7 @@ class Trainer:
     def train(self) -> None:
         # TODO: Integrate MLFlow traces
         # TODO: InfoNCE dataset and loss
-        # TODO: Preprocess windowing
+        # TODO: Remove spaCy stuff from code and remove it from uv
         if self.accelerator.is_main_process:
             mlflow.set_experiment(self.experiment_name)
             extra_run_kwargs = {}
@@ -465,7 +454,7 @@ class Trainer:
             if self.accelerator.is_main_process:
                 self.run_name = self.run_name or run.data.tags.get("mlflow.runName")
                 run_path: Path = self.experiment_path / self.run_name
-                is_empty: bool = not any(run_path.iterdir())
+                is_empty: bool = not run_path.exists() or not any(run_path.iterdir())
                 run_path.mkdir(exist_ok=self.resuming_training or is_empty)
 
                 total_params: int = sum([p.numel() for p in self.model.parameters()])

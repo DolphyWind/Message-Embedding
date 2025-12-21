@@ -60,16 +60,12 @@ class TripletDataset(Dataset):
         self,
         hf_dataset: datasets.DatasetDict,
         context_len: int,
-        use_query_prob: float,
-        use_last_prob: float,
     ) -> None:
         super().__init__()
 
         self._segments: list[str] = list(hf_dataset.keys())
         self._hf_dataset = hf_dataset
         self._context_len: int = context_len
-        self._use_query_prob: float = use_query_prob
-        self._use_last_prob: float = use_last_prob
 
         self._indexable_lens: dict[str, int] = {}
         for k in self._segments:
@@ -87,14 +83,7 @@ class TripletDataset(Dataset):
         entry = current_segment[actual_index]
 
         positive = entry["positive"]
-        random_number: float = random.uniform(0.0, 1.0)
-        if random_number < self._use_query_prob:
-            anchor = entry["anchor"]
-        elif random_number < self._use_query_prob + self._use_last_prob:
-            anchor = entry["group"][-1]
-        else:
-            idx = random.randint(0, entry["group"].__len__() - 2)
-            anchor = entry["group"][idx]
+        anchor = random.choice(entry["group"])
 
         negative_index = index
         while index <= negative_index < index + self._context_len:
