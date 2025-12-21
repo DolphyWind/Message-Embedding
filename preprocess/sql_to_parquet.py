@@ -4,7 +4,6 @@ import sqlite3
 
 import pandas as pd
 from tqdm import tqdm
-from find_queries import group_to_query
 
 
 def sqlite_table_to_parquet(
@@ -25,7 +24,6 @@ def sqlite_table_to_parquet(
 
         content = df['content']
         timestamp_col = df["timestamp"]
-        anchor_sentences: list[str] = []
         positive_sentences: list[str] = []
         groups: list[list[str]] = []
         timestamps: list[str] = []
@@ -38,17 +36,14 @@ def sqlite_table_to_parquet(
                 f"<user{i}>{s}</user>"
                 for i, s in enumerate(group)
             ])
-            anchor = group_to_query(group, max_tokens=10)
             groups.append(group.to_list())
-            anchor_sentences.append(anchor)
             positive_sentences.append(positive)
             timestamps.append(timestamp_col[i].to_list())
 
-        if anchor_sentences.__len__() == 0:
+        if positive_sentences.__len__() == 0:
             return
 
         new_df = pd.DataFrame({
-            'anchor': anchor_sentences,
             'positive': positive_sentences,
             'group': groups,
             'timestamp': timestamps,

@@ -438,7 +438,6 @@ class Trainer:
     def train(self) -> None:
         # TODO: Integrate MLFlow traces
         # TODO: InfoNCE dataset and loss
-        # TODO: Remove spaCy stuff from code and remove it from uv
         if self.accelerator.is_main_process:
             mlflow.set_experiment(self.experiment_name)
             extra_run_kwargs = {}
