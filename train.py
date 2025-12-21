@@ -98,7 +98,7 @@ class Trainer:
         cf: Optional[Path] = self.continue_from
         if cf is None and self.run_name is not None:
             run_path: Path = self.experiment_path / self.run_name
-            if run_path.exists() and any(run_path.iterdir()):
+            if (run_path / 'train_state.pth').exists():
                 yn = input("A previous run already exists. Continue from that instead? [y/N]:")
                 if yn.lower() == 'y':
                     cf = self.experiment_path / self.run_name
