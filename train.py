@@ -1,4 +1,3 @@
-from argparse import ArgumentParser
 from contextlib import nullcontext
 import math
 import os
@@ -11,8 +10,6 @@ from datasets import DatasetDict
 from lion_pytorch import Lion
 import mlflow
 import torch
-import torch.nn as nn
-import torch.nn.functional as F
 import torch.optim as optim
 from torch.optim.lr_scheduler import LRScheduler, LambdaLR, LinearLR
 from lr_scheduling import LinearWarmupCosineDecay
@@ -20,14 +17,15 @@ from torch.utils.data import DataLoader
 from tqdm import tqdm
 from datetime import datetime
 
-from loss import triplet_loss
+from loss import triplet_loss, infonce_loss, clip_loss
 from model import MessageEmbeddingModel
 from triplet_dataset import TripletDataset, eval_group, load_and_split, collate_triplet
+from argument_parser import ArgParser
 
 
 class Trainer:
     def __init__(self) -> None:
-        self.create_argparser()
+        self.parser: ArgParser = ArgParser()
         args = self.parser.parse_args()
         self.read_args(args)
         self.init_epoch: int = 1
@@ -50,7 +48,14 @@ class Trainer:
         self.pooling_mode: Literal['mean', 'attention'] = args.pooling_mode
         self.context_length: int = args.context_length
         self.timestamp: Optional[str] = args.timestamp
+        self.loss_func_type: str = args.loss_func
+        self.loss_func = {
+            "triplet": triplet_loss,
+            "infonce": infonce_loss,
+            "clip": clip_loss,
+        }[self.loss_func_type]
         self.margin: float = args.margin
+        self.temperature: float = args.temperature
         self.lr_ft: float = args.lr_ft
         self.lr_base: float = args.lr_base
         self.lora: bool = args.lora
@@ -211,207 +216,6 @@ class Trainer:
                 if best_model_path.exists():
                     self.best_val_loss: float = torch.load(best_model_path)["val_loss"]
 
-    def create_argparser(self) -> None:
-        self.parser: ArgumentParser = ArgumentParser(
-            description="Fine-tuning script for Botphy's memories extension."
-        )
-        self.parser.add_argument(
-            '--base_model',
-            type=str,
-            # required=True,
-            choices=[
-                'TURKCELL/roberta-base-turkish-uncased',
-                'dbmdz/bert-base-turkish-128k-uncased',
-                'emrecan/bert-base-turkish-cased-mean-nli-stsb-tr',
-            ],
-            default=None,
-            help="Model name to finetune.",
-        )
-        self.parser.add_argument(
-            '--pooling_mode',
-            type=str,
-            choices=[
-                'mean',
-                'attention',
-            ],
-            default='mean',
-            help="Pooling strategy",
-        )
-        self.parser.add_argument(
-            '--context_length',
-            type=int,
-            default=8,
-            help='Window size for when sampling messages'
-        )
-        self.parser.add_argument(
-            "--timestamp",
-            type=str,
-            default=None,
-            help="A timestamp in ISO-8601 format. Used to include the data entries AFTER this timestamp.",
-        )
-        self.parser.add_argument(
-            '--margin',
-            type=float,
-            default=0.3,
-            help="Margin value. Ensures the positive sentence is this amount of closer to negative sentence by this amount. Please refer to https://arxiv.org/abs/1908.10084 section 3 for more details.",  # noqa
-        )
-        self.parser.add_argument(
-            '--lr_ft',
-            type=float,
-            default=1e-5,
-            help="Learning rate for the fine-tuned parameters.",
-        )
-        self.parser.add_argument(
-            '--lr_base',
-            type=float,
-            default=1e-4,
-            help="Learning rate for the new parameters.",
-        )
-        self.parser.add_argument(
-            '--lora',
-            action='store_true',
-            help="Use LoRa (https://arxiv.org/abs/2106.09685) for fine-tuning.",
-        )
-        self.parser.add_argument(
-            "--lora_rank",
-            type=int,
-            default=8,
-            help="Rank parameter of LoRA.",
-        )
-        self.parser.add_argument(
-            "--lora_alpha",
-            type=int,
-            default=16,
-            help="Alpha parameter of LoRA. It is recommended to keep alpha/rank \\in O(1)",
-        )
-        self.parser.add_argument(
-            "--lora_dropout",
-            type=float,
-            default=0.05,
-            help="Dropout parameter of LoRA.",
-        )
-        self.parser.add_argument(
-            "--mixed_precision", "--mp",
-            type=str,
-            default="no",
-            choices=["no", "fp16", "bf16", "fp8"],
-            help="The mixed precision type to use.",
-        )
-        self.parser.add_argument(
-            '--out_path',
-            type=Path,
-            default=Path('./results'),
-            help="Path to save outputs.",
-        )
-        self.parser.add_argument(
-            '--epochs',
-            type=int,
-            default=20,
-            help="Number of epochs.",
-        )
-        self.parser.add_argument(
-            '--optimizer_name',
-            type=str,
-            default='AdamW',
-            choices=[
-                'AdamW',
-                'Adam',
-                'Lion',
-            ],
-            help="Optimizer to use.",
-        )
-        self.parser.add_argument(
-            '--weight_decay',
-            type=float,
-            default=0.01,
-            help="Weight decay value.",
-        )
-        self.parser.add_argument(
-            '--experiment_name',
-            type=str,
-            default=None,
-            help="The name of the experiment.",
-        )
-        self.parser.add_argument(
-            '--run_name',
-            type=str,
-            default=None,
-            help="The name of the MLFlow run."
-        )
-        self.parser.add_argument(
-            '--continue_from',
-            type=str,
-            default=None,
-            help="Path to continue training from."
-        )
-        self.parser.add_argument(
-            '--warmup_percentage',
-            type=float,
-            default=0.05,
-            help="Warmup percentage for linear warmup + cos decay scheduler. Unused otherwise."
-        )
-        self.parser.add_argument(
-            '--lr_scheduler_type',
-            type=str,
-            choices=["none", "linear", "lr_warm_cos_dec"],
-            default="linear",
-            help="Learning rate scheduler type.",
-        )
-        self.parser.add_argument(
-            '--lr_begin_factor',
-            type=float,
-            default=0.1,
-            help="Start factor for linear warmup + cos decay scheduler. Unused if LinearLR is used."
-        )
-        self.parser.add_argument(
-            '--lr_end_factor',
-            type=float,
-            default=0.01,
-            help="End factor of the LinearLR or linear warmup + cos decay schedulers."
-        )
-        self.parser.add_argument(
-            '--data_path',
-            type=Path,
-            default=Path('./data/'),
-            help="Input data for the model."
-        )
-        self.parser.add_argument(
-            '--train_size',
-            type=float,
-            default=0.85,
-            help="Percentage size of the train split, the remainder is used for validation."
-        )
-        self.parser.add_argument(
-            '--batch_size',
-            type=int,
-            default=16,
-            help="Batch size used for training",
-        )
-        self.parser.add_argument(
-            '--mlflow_uri',
-            type=str,
-            default='',
-            help="MLFlow URI. An SQLite database is used if not provided."
-        )
-        self.parser.add_argument(
-            '--mlflow_username',
-            type=str,
-            default='',
-            help="MLFlow remote server username."
-        )
-        self.parser.add_argument(
-            '--mlflow_password',
-            type=str,
-            default='',
-            help="MLFlow remote server password."
-        )
-        self.parser.add_argument(
-            '--num_workers',
-            type=int,
-            default=4,
-            help="Number of workers for the dataloader."
-        )
-
     def get_new_optimizer(self) -> optim.Optimizer:
         param_groups: dict[str, Any] = self.model.get_param_groups()
         optim_input: list[dict[str, Any]] = [
@@ -518,11 +322,19 @@ class Trainer:
                     train_iters += 1
 
                     self.optimizer.zero_grad()
+                    batch = {
+                        "anchors": anchors,
+                        "positives": positives,
+                        "negatives": negatives,
+                    }
+                    if self.loss_func_type not in ("triplet",):
+                        del batch["negatives"]
                     loss = self._one_step(
-                        anchors,
-                        positives,
-                        negatives,
-                        token_context_length
+                        batch,
+                        token_context_length,
+                        loss_func=self.loss_func,
+                        margin=self.margin,
+                        temperature=self.temperature,
                     )
                     train_losses.append(loss.item())
                     total_train_loss += loss.item()
@@ -559,7 +371,20 @@ class Trainer:
                     val_iters = 0
                     for anchors, positives, negatives in val_loop:
                         val_iters += 1
-                        loss = self._one_step(anchors, positives, negatives, token_context_length)
+                        batch = {
+                            "anchors": anchors,
+                            "positives": positives,
+                            "negatives": negatives,
+                        }
+                        if self.loss_func_type not in ("triplet",):
+                            del batch["negatives"]
+                        loss = self._one_step(
+                            batch,
+                            token_context_length,
+                            loss_func=self.loss_func,
+                            margin=self.margin,
+                            temperature=self.temperature,
+                        )
                         total_val_loss += loss.item()
                         val_losses.append(loss.item())
                         avg_loss: float = total_val_loss / val_iters
@@ -585,44 +410,38 @@ class Trainer:
 
     def _one_step(
         self,
-        anchors: dict[str, torch.Tensor],
-        positives: dict[str, torch.Tensor],
-        negatives: dict[str, torch.Tensor],
+        batch: dict[str, dict[str, torch.Tensor]],
         max_length: int,
+        *,
+        loss_func=triplet_loss,
+        **loss_func_args,
     ) -> torch.Tensor:
-        anchor_in = self.model.tokenizer(
-            anchors,
-            padding=True,
-            truncation=True,
-            max_length=max_length,
-            return_tensors='pt'
-        )
-        positive_in = self.model.tokenizer(
-            positives,
-            padding=True,
-            truncation=True,
-            max_length=max_length,
-            return_tensors='pt'
-        )
-        negative_in = self.model.tokenizer(
-            negatives,
-            padding=True,
-            truncation=True,
-            max_length=max_length,
-            return_tensors='pt'
-        )
+        inputs: dict[str, dict[str, Any]] = {
+            k: self.model.tokenizer(
+                v,
+                padding=True,
+                truncation=True,
+                max_length=max_length,
+                return_tensors='pt',
+            )
+            for k, v in batch.items()
+        }
+        inputs = {
+            k: {
+                kk: vv.to(self.device)
+                for kk, vv in v.items()
+            }
+            for k, v in inputs.items()
+        }
 
-        anchor_tok = anchor_in['input_ids'].to(self.device)
-        anchor_mask = anchor_in['attention_mask'].to(self.device)
-        positive_tok = positive_in['input_ids'].to(self.device)
-        positive_mask = positive_in['attention_mask'].to(self.device)
-        negative_tok = negative_in['input_ids'].to(self.device)
-        negative_mask = negative_in['attention_mask'].to(self.device)
-
-        anchor_out = self.model(anchor_tok, anchor_mask)
-        pos_out = self.model(positive_tok, positive_mask)
-        neg_out = self.model(negative_tok, negative_mask)
-        loss = triplet_loss(anchor_out, pos_out, neg_out, self.margin)
+        outputs = {
+            k: self.model(**v)
+            for k, v in inputs.items()
+        }
+        loss = loss_func(
+            **outputs,
+            **loss_func_args,
+        )
 
         return loss
 
