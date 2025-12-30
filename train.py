@@ -82,6 +82,7 @@ class Trainer:
         self.mlflow_username: str = args.mlflow_username
         self.mlflow_password: str = args.mlflow_password
         self.num_workers: int = args.num_workers
+        self.gradient_accum_steps: int = args.gradient_accum_steps
 
         if not self.continue_from:
             if not self.base_model_name:
@@ -126,7 +127,10 @@ class Trainer:
                     category=UserWarning,
                 )
 
-        self.accelerator = Accelerator(mixed_precision=self.mixed_precision)
+        self.accelerator = Accelerator(
+            mixed_precision=self.mixed_precision,
+            gradient_accumulation_steps=self.gradient_accum_steps,
+        )
         self.device: torch.device = self.accelerator.device
 
         if not self.mlflow_uri:
@@ -321,7 +325,6 @@ class Trainer:
                     current_lr: float = self.optimizer.param_groups[0]["lr"]
                     train_iters += 1
 
-                    self.optimizer.zero_grad()
                     batch = {
                         "anchors": anchors,
                         "positives": positives,
@@ -329,23 +332,28 @@ class Trainer:
                     }
                     if self.loss_func_type not in ("triplet",):
                         del batch["negatives"]
-                    loss = self._one_step(
-                        batch,
-                        token_context_length,
-                        loss_func=self.loss_func,
-                        margin=self.margin,
-                        temperature=self.temperature,
-                    )
-                    train_losses.append(loss.item())
-                    total_train_loss += loss.item()
-                    avg_loss: float = total_train_loss / train_iters
 
-                    if self.accelerator.is_main_process:
-                        train_loop.set_postfix(loss=loss.item(), avg_loss=avg_loss, lr=current_lr)
+                    with self.accelerator.accumulate(self.model):
+                        self.optimizer.zero_grad()
+                        loss = self._one_step(
+                            batch,
+                            token_context_length,
+                            loss_func=self.loss_func,
+                            margin=self.margin,
+                            temperature=self.temperature,
+                        )
+                        train_losses.append(loss.item())
+                        total_train_loss += loss.item()
+                        avg_loss: float = total_train_loss / train_iters
 
-                    self.accelerator.backward(loss)
-                    self.optimizer.step()
-                    self.lr_scheduler.step()
+                        if self.accelerator.is_main_process:
+                            num_last: int = 100
+                            last_avg = sum(train_losses[-num_last:]) / train_losses[-num_last:].__len__()
+                            train_loop.set_postfix(loss=loss.item(), avg_loss=avg_loss, last_100_avg=last_avg, lr=current_lr)
+
+                        self.accelerator.backward(loss)
+                        self.optimizer.step()
+                        self.lr_scheduler.step()
 
                 losses_tensor: torch.Tensor = torch.tensor(train_losses, device=self.accelerator.device)
                 losses_gathered: torch.Tensor = self.accelerator.gather(losses_tensor)
@@ -389,7 +397,9 @@ class Trainer:
                         val_losses.append(loss.item())
                         avg_loss: float = total_val_loss / val_iters
                         if self.accelerator.is_main_process:
-                            val_loop.set_postfix(loss=loss.item(), avg_loss=avg_loss)
+                            num_last: int = 100
+                            last_avg = sum(val_losses[-num_last:]) / val_losses[-num_last:].__len__()
+                            val_loop.set_postfix(loss=loss.item(), last_100_avg=last_avg, avg_loss=avg_loss)
 
                     val_losses_tensor: torch.Tensor = torch.tensor(val_losses, device=self.accelerator.device)
                     val_losses_gathered: torch.Tensor = self.accelerator.gather(val_losses_tensor)

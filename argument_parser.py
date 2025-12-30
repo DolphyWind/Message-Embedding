@@ -221,6 +221,12 @@ class ArgParser:
             default=4,
             help="Number of workers for the dataloader."
         )
+        self.parser.add_argument(
+            '--gradient_accum_steps',
+            type=int,
+            default=1,
+            help="Gradient accumulation steps."
+        )
 
     def parse_args(self) -> Namespace:
         return self.parser.parse_args()
