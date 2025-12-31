@@ -55,3 +55,31 @@ def clip_loss(
             temperature=temperature
         )
     )
+
+
+def multipositive_infonce_loss(
+    *,
+    anchors: torch.Tensor,
+    positives: torch.Tensor,
+    temperature: float,
+    **kwargs,
+) -> torch.Tensor:
+    a = F.normalize(anchors, dim=1)
+    p = F.normalize(positives, dim=1)
+
+    logits: torch.Tensor = a @ p.T
+    logits /= temperature
+
+    n = a.size(0)
+    m = p.size(0)
+    k = m // n
+
+    log_probs = logits - torch.logsumexp(logits, dim=1, keepdim=True)
+
+    idx = torch.arange(n, device=logits.device)
+    pos_idx = idx[:, None] * k + torch.arange(k, device=logits.device)
+    pos_mask = torch.zeros_like(logits, dtype=logits.dtype)
+    pos_mask.scatter_(1, pos_idx, 1.0)
+
+    loss = -(log_probs * pos_mask).sum(dim=1) / k
+    return loss.mean()

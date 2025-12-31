@@ -13,14 +13,19 @@ import torch
 import torch.optim as optim
 from torch.optim.lr_scheduler import LRScheduler, LambdaLR, LinearLR
 from lr_scheduling import LinearWarmupCosineDecay
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, Dataset
 from tqdm import tqdm
 from datetime import datetime
 
-from loss import triplet_loss, infonce_loss, clip_loss
+from loss import multipositive_infonce_loss, triplet_loss, infonce_loss, clip_loss
 from model import MessageEmbeddingModel
-from triplet_dataset import TripletDataset, eval_group, load_and_split, collate_triplet
+from data import InfoNCEDataset, TripletDataset, collate_infonce, eval_group, load_and_split, collate_triplet
 from argument_parser import ArgParser
+
+
+# This should be LossFuncTypeType but that is lame
+type LossFuncType = Literal['triplet', 'infonce', 'clip']
+type PoolingType = Literal['mean', 'attention']
 
 
 class Trainer:
@@ -35,8 +40,8 @@ class Trainer:
 
         self.accelerator: Accelerator
         self.device: torch.device
-        self.train_dataset: TripletDataset
-        self.val_dataset: TripletDataset
+        self.train_dataset: Dataset
+        self.val_dataset: Dataset
         self.model: MessageEmbeddingModel
         self.optimizer: optim.Optimizer
         self.lr_scheduler: LRScheduler
@@ -45,10 +50,10 @@ class Trainer:
     def read_args(self, args):
         self.args = args
         self.base_model_name: str = args.base_model
-        self.pooling_mode: Literal['mean', 'attention'] = args.pooling_mode
+        self.pooling_mode: PoolingType = args.pooling_mode
         self.context_length: int = args.context_length
         self.timestamp: Optional[str] = args.timestamp
-        self.loss_func_type: str = args.loss_func
+        self.loss_func_type: LossFuncType = args.loss_func
         self.loss_func = {
             "triplet": triplet_loss,
             "infonce": infonce_loss,
@@ -160,14 +165,26 @@ class Trainer:
         for k in dataset["val"]:
             dataset["val"][k] = dataset["val"][k].map(eval_group, num_proc=self.num_workers)
 
-        self.train_dataset = TripletDataset(
-            dataset['train'],
-            context_len=self.context_length,
-        )
-        self.val_dataset = TripletDataset(
-            dataset['val'],
-            context_len=self.context_length,
-        )
+        if self.loss_func_type == "triplet":
+            self.train_dataset = TripletDataset(
+                dataset['train'],
+                context_len=self.context_length,
+                full_context=False,
+            )
+            self.val_dataset = TripletDataset(
+                dataset['val'],
+                context_len=self.context_length,
+                full_context=False,
+            )
+        elif self.loss_func_type in ("clip", "infonce"):
+            self.train_dataset = InfoNCEDataset(
+                dataset['train'],
+                context_len=self.context_length,
+            )
+            self.val_dataset = InfoNCEDataset(
+                dataset['val'],
+                context_len=self.context_length,
+            )
         self.optimizer = self.get_new_optimizer()
         steps_per_epoch: int = math.ceil(len(self.train_dataset) / self.batch_size)
         total_steps: int = self.epochs * steps_per_epoch
@@ -244,8 +261,6 @@ class Trainer:
             raise NotImplementedError()
 
     def train(self) -> None:
-        # TODO: Integrate MLFlow traces
-        # TODO: InfoNCE dataset and loss
         if self.accelerator.is_main_process:
             mlflow.set_experiment(self.experiment_name)
             extra_run_kwargs = {}
@@ -284,11 +299,15 @@ class Trainer:
                 mlflow.log_param("mixed_precision", self.mixed_precision)
                 mlflow.log_param("param_count", total_params)
 
+            if self.loss_func_type == 'triplet':
+                collate_fn = collate_triplet
+            elif self.loss_func_type in ('infonce', 'clip'):
+                collate_fn = collate_infonce
             train_loader = DataLoader(
                 self.train_dataset,
                 batch_size=self.batch_size,
                 shuffle=True,
-                collate_fn=collate_triplet,
+                collate_fn=collate_fn,
                 num_workers=self.num_workers,
                 pin_memory=True,
             )
@@ -296,7 +315,7 @@ class Trainer:
                 self.val_dataset,
                 batch_size=self.batch_size,
                 shuffle=False,
-                collate_fn=collate_triplet,
+                collate_fn=collate_fn,
                 num_workers=self.num_workers,
                 pin_memory=True,
             )
@@ -306,6 +325,11 @@ class Trainer:
 
             tokenizer = self.model.tokenizer
             token_context_length: int = self.model.token_context_length
+
+            if self.loss_func_type == 'triplet':
+                one_step_func = self._one_step_triplet
+            elif self.loss_func_type in ('infonce', 'clip'):
+                one_step_func = self._one_step_infonce
             for epoch in range(self.init_epoch, self.epochs + 1):
                 # ---------------------------------
                 # Train
@@ -321,24 +345,27 @@ class Trainer:
 
                 train_iters = 0
                 self.model.train()
-                for anchors, positives, negatives in train_loop:
+                for val_batch in train_loop:
                     current_lr: float = self.optimizer.param_groups[0]["lr"]
                     train_iters += 1
 
-                    batch = {
-                        "anchors": anchors,
-                        "positives": positives,
-                        "negatives": negatives,
-                    }
-                    if self.loss_func_type not in ("triplet",):
-                        del batch["negatives"]
+                    if self.loss_func_type == 'triplet':
+                        batch = {
+                            "anchors": val_batch[0],
+                            "positives": val_batch[1],
+                            "negatives": val_batch[2],
+                        }
+                    elif self.loss_func_type in ('infonce', 'clip'):
+                        batch = {
+                            "anchors": val_batch[0],
+                            "positives": val_batch[1],
+                        }
 
                     with self.accelerator.accumulate(self.model):
                         self.optimizer.zero_grad()
-                        loss = self._one_step(
+                        loss = one_step_func(
                             batch,
                             token_context_length,
-                            loss_func=self.loss_func,
                             margin=self.margin,
                             temperature=self.temperature,
                         )
@@ -377,19 +404,23 @@ class Trainer:
                 self.model.eval()
                 with torch.no_grad():
                     val_iters = 0
-                    for anchors, positives, negatives in val_loop:
+                    for val_batch in val_loop:
                         val_iters += 1
-                        batch = {
-                            "anchors": anchors,
-                            "positives": positives,
-                            "negatives": negatives,
-                        }
-                        if self.loss_func_type not in ("triplet",):
-                            del batch["negatives"]
-                        loss = self._one_step(
+
+                        if self.loss_func_type == 'triplet':
+                            batch = {
+                                "anchors": val_batch[0],
+                                "positives": val_batch[1],
+                                "negatives": val_batch[2],
+                            }
+                        elif self.loss_func_type in ('infonce', 'clip'):
+                            batch = {
+                                "anchors": val_batch[0],
+                                "positives": val_batch[1],
+                            }
+                        loss = one_step_func(
                             batch,
                             token_context_length,
-                            loss_func=self.loss_func,
                             margin=self.margin,
                             temperature=self.temperature,
                         )
@@ -418,13 +449,12 @@ class Trainer:
                 self.best_val_loss = min(self.best_val_loss, avg_val_loss)
                 self.accelerator.wait_for_everyone()
 
-    def _one_step(
+    def _one_step_triplet(
         self,
-        batch: dict[str, dict[str, torch.Tensor]],
+        batch: dict[str, list[str]],
         max_length: int,
-        *,
-        loss_func=triplet_loss,
-        **loss_func_args,
+        margin: float,
+        **kwargs,
     ) -> torch.Tensor:
         inputs: dict[str, dict[str, Any]] = {
             k: self.model.tokenizer(
@@ -448,9 +478,52 @@ class Trainer:
             k: self.model(**v)
             for k, v in inputs.items()
         }
-        loss = loss_func(
+        loss = triplet_loss(
             **outputs,
-            **loss_func_args,
+            margin=margin,
+        )
+
+        return loss
+
+    def _one_step_infonce(
+        self,
+        batch: dict[str, Any],
+        max_length: int,
+        temperature: float,
+        **kwargs,
+    ) -> torch.Tensor:
+        batch["positives"] = [s for sub in batch["positives"] for s in sub]
+        inputs: dict[str, dict[str, Any]] = {
+            "anchors": self.model.tokenizer(
+                batch["anchors"],
+                padding=True,
+                truncation=True,
+                max_length=max_length,
+                return_tensors='pt',
+            ),
+            "positives": self.model.tokenizer(
+                batch["positives"],
+                padding=True,
+                truncation=True,
+                max_length=max_length,
+                return_tensors="pt",
+            )
+        }
+        inputs = {
+            k: {
+                kk: vv.to(self.device)
+                for kk, vv in v.items()
+            }
+            for k, v in inputs.items()
+        }
+
+        outputs = {
+            k: self.model(**v)
+            for k, v in inputs.items()
+        }
+        loss = multipositive_infonce_loss(
+            **outputs,
+            temperature=temperature,
         )
 
         return loss
