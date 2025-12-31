@@ -19,12 +19,12 @@ from datetime import datetime
 
 from loss import multipositive_infonce_loss, triplet_loss, infonce_loss, clip_loss
 from model import MessageEmbeddingModel
-from data import InfoNCEDataset, TripletDataset, collate_infonce, eval_group, load_and_split, collate_triplet
+from data import MultipositiveInfoNCEDataset, TripletDataset, collate_infonce, eval_group, load_and_split, collate_triplet
 from argument_parser import ArgParser
 
 
 # This should be LossFuncTypeType but that is lame
-type LossFuncType = Literal['triplet', 'infonce', 'clip']
+type LossFuncType = Literal['triplet', 'infonce_multipositive', 'infonce', 'clip']
 type PoolingType = Literal['mean', 'attention']
 
 
@@ -56,6 +56,7 @@ class Trainer:
         self.loss_func_type: LossFuncType = args.loss_func
         self.loss_func = {
             "triplet": triplet_loss,
+            "infonce_multipositive": multipositive_infonce_loss,
             "infonce": infonce_loss,
             "clip": clip_loss,
         }[self.loss_func_type]
@@ -176,15 +177,17 @@ class Trainer:
                 context_len=self.context_length,
                 full_context=False,
             )
-        elif self.loss_func_type in ("clip", "infonce"):
-            self.train_dataset = InfoNCEDataset(
+        elif self.loss_func_type == "infonce_multipositive":
+            self.train_dataset = MultipositiveInfoNCEDataset(
                 dataset['train'],
                 context_len=self.context_length,
             )
-            self.val_dataset = InfoNCEDataset(
+            self.val_dataset = MultipositiveInfoNCEDataset(
                 dataset['val'],
                 context_len=self.context_length,
             )
+        else:
+            assert False, "TODO: Implement this"
         self.optimizer = self.get_new_optimizer()
         steps_per_epoch: int = math.ceil(len(self.train_dataset) / self.batch_size)
         total_steps: int = self.epochs * steps_per_epoch
@@ -301,8 +304,10 @@ class Trainer:
 
             if self.loss_func_type == 'triplet':
                 collate_fn = collate_triplet
-            elif self.loss_func_type in ('infonce', 'clip'):
+            elif self.loss_func_type == 'infonce_multipositive':
                 collate_fn = collate_infonce
+            else:
+                assert False, "TODO: Implement this"
             train_loader = DataLoader(
                 self.train_dataset,
                 batch_size=self.batch_size,
@@ -328,8 +333,10 @@ class Trainer:
 
             if self.loss_func_type == 'triplet':
                 one_step_func = self._one_step_triplet
-            elif self.loss_func_type in ('infonce', 'clip'):
-                one_step_func = self._one_step_infonce
+            elif self.loss_func_type == 'infonce_multipositive':
+                one_step_func = self._one_step_multipos_infonce
+            else:
+                assert False, "TODO: Implement this"
             for epoch in range(self.init_epoch, self.epochs + 1):
                 # ---------------------------------
                 # Train
@@ -355,11 +362,13 @@ class Trainer:
                             "positives": val_batch[1],
                             "negatives": val_batch[2],
                         }
-                    elif self.loss_func_type in ('infonce', 'clip'):
+                    elif self.loss_func_type == 'infonce_multipositive':
                         batch = {
                             "anchors": val_batch[0],
                             "positives": val_batch[1],
                         }
+                    else:
+                        assert False, "TODO: Implement this"
 
                     with self.accelerator.accumulate(self.model):
                         self.optimizer.zero_grad()
@@ -413,11 +422,13 @@ class Trainer:
                                 "positives": val_batch[1],
                                 "negatives": val_batch[2],
                             }
-                        elif self.loss_func_type in ('infonce', 'clip'):
+                        elif self.loss_func_type == 'infonce_multipositive':
                             batch = {
                                 "anchors": val_batch[0],
                                 "positives": val_batch[1],
                             }
+                        else:
+                            assert False, "TODO: Implement this"
                         loss = one_step_func(
                             batch,
                             token_context_length,
@@ -485,7 +496,7 @@ class Trainer:
 
         return loss
 
-    def _one_step_infonce(
+    def _one_step_multipos_infonce(
         self,
         batch: dict[str, Any],
         max_length: int,

@@ -47,11 +47,32 @@ class ArgParser:
             type=str,
             choices=[
                 'triplet',
+                'infonce_multipositive',
                 'infonce',
-                'clip',
+                'clip'
             ],
             default="triplet",
             help="Loss function to use."
+        )
+        self.parser.add_argument(
+            '--use_full_context',
+            type=bool,
+            default=False,
+            action='store_true',
+            help="For Triplet Loss only. Returns all sub-messages of a block as its anchor. Effectively increases the train and validation dataset size 8 fold.",  # noqa
+        )
+        self.parser.add_argument(
+            '--last_message_only',
+            type=bool,
+            default=False,
+            action='store_true',
+            help="For Triplet Loss only. Return only the last message of a block as its anchor. Ignored if --use_full_context is provided.",  # noqa
+        )
+        self.parser.add_argument(
+            '--any_message_prob',
+            type=float,
+            default=0.1,
+            help="Probability to sample any message of current block even though last_message_only is true. Used for regularization."  # noqa
         )
         self.parser.add_argument(
             '--margin',

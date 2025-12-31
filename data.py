@@ -1,6 +1,7 @@
 import math
 from pathlib import Path
 from typing import Optional
+import warnings
 from datasets import DatasetDict, load_dataset
 import datasets
 import random
@@ -65,7 +66,9 @@ class TripletDataset(Dataset):
         self,
         hf_dataset: datasets.DatasetDict,
         context_len: int,
-        full_context: bool=False,
+        full_context: bool = False,
+        last_message_only: bool = False,
+        any_message_prob: float = 0.1,
     ) -> None:
         """
         Create a TripletDataset object
@@ -80,13 +83,21 @@ class TripletDataset(Dataset):
             Context Length
         full_context
             Set True to sample all sub-messages individually as anchors. Otherwise anchor is randomly sampled. (Produces context_len times more elements.)
-        """
+        last_message_only
+            Only return the last message of block as its anchor.
+        any_message_prob
+            Probability of randomly selecting a message even though last_message_only is provided. Used for regularization.
+        """  # noqa
         super().__init__()
 
         self._segments: list[str] = list(hf_dataset.keys())
         self._hf_dataset = hf_dataset
         self._context_len: int = context_len
         self._full_context: bool = full_context
+        self._last_message_only: bool = last_message_only
+        self._any_message_prob: float = any_message_prob
+        if self._full_context and self._last_message_only:
+            warnings.warn("full_context and only_last_message are both True. Ignoring only_last_message.")
 
         self._indexable_lens: dict[str, int] = {}
         for k in self._segments:
@@ -110,7 +121,12 @@ class TripletDataset(Dataset):
             group_idx: int = index % self._context_len
         else:
             block_idx = index
-            group_idx = random.randint(0, self._context_len - 1)
+            # TODO: Maybe make any message a special case when any_message_prob=1
+            last_message_only = self._last_message_only and (random.uniform(0.0, 1.0) >= self._any_message_prob)
+            if last_message_only:
+                group_idx = self._context_len - 1
+            else:
+                group_idx = random.randint(0, self._context_len - 1)
         current_segment, actual_block_index = self._index_dataset(block_idx)
         entry = current_segment[actual_block_index]
 
