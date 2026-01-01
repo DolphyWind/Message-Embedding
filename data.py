@@ -161,7 +161,7 @@ class TripletDataset(Dataset):
         return segment, actual_block_index
 
 
-class InfoNCEDataset(Dataset):
+class MultipositiveInfoNCEDataset(Dataset):
     def __init__(
         self,
         hf_dataset: datasets.DatasetDict,
