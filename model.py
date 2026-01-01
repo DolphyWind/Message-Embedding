@@ -94,6 +94,10 @@ class MessageEmbeddingModel(nn.Module):
     def tokenizer(self):
         return self._tokenizer
 
+    @property
+    def embedding_dim(self) -> int:
+        return self._embedding_dim
+
 
 class NewTokenEmbeddingAdapter(torch.nn.Module):
     def __init__(self, num_new_tokens: int, d_model: int):
