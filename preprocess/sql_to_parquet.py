@@ -24,6 +24,7 @@ def sqlite_table_to_parquet(
 
         content = df['content']
         timestamp_col = df["timestamp"]
+        indices: list[int] = []
         positive_sentences: list[str] = []
         groups: list[list[str]] = []
         timestamps: list[str] = []
@@ -33,17 +34,20 @@ def sqlite_table_to_parquet(
         for i in current_loop:
             group = content[i:i+context_length]
             positive: str = ''.join([
-                f"<user{i}>{s}</user>"
-                for i, s in enumerate(group)
+                f"<user{j}>{s}</user>"
+                for j, s in enumerate(group)
             ])
+            indices.append(i)
             groups.append(group.to_list())
             positive_sentences.append(positive)
-            timestamps.append(timestamp_col[i].to_list())
+            # timestamps.append(timestamp_col[i].to_list())
+            timestamps.append(timestamp_col[i])
 
         if positive_sentences.__len__() == 0:
             return
 
         new_df = pd.DataFrame({
+            'index': indices,
             'positive': positive_sentences,
             'group': groups,
             'timestamp': timestamps,

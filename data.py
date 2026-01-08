@@ -36,7 +36,7 @@ def load_and_split(
     train_dataset: DatasetDict = DatasetDict()
     val_dataset: DatasetDict = DatasetDict()
     for seg_name, segment in dataset.items():
-        if timestamp:
+        if timestamp is not None:
             segment = segment.filter(
                 lambda x: datetime.fromisoformat(x["timestamp"]) > timestamp
             )

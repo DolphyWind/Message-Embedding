@@ -1,12 +1,18 @@
-from data import load_and_split
+from argparse import ArgumentParser
+from datetime import datetime
+import json
+from pathlib import Path
+
 from datasets import DatasetDict
+from faiss import IndexFlatL2
+import torch
+from tqdm import tqdm
+
+from data import load_and_split
 from model import MessageEmbeddingModel
 from vector_database import VectorDatabase
-from tqdm import tqdm
-from faiss import IndexFlatL2
-from pathlib import Path
-from argparse import ArgumentParser
-import torch
+from model import MessageEmbeddingModel
+from vector_database import VectorDatabase
 
 
 def parse_args():
@@ -31,6 +37,12 @@ def parse_args():
         help="Embedding output path",
         required=True,
     )
+    parser.add_argument(
+        '--timestamp',
+        type=str,
+        help="Timestamp to filter",
+        default=None
+    )
     return parser.parse_args()
 
 
@@ -39,6 +51,7 @@ class Embedder:
         self.data_path: Path = args.data_path
         self.model_path: Path = args.model_path
         self.output_path: Path = args.output_path
+        self.timestamp: str = args.timestamp
         self.output_path.mkdir(exist_ok=True, parents=True)
         train_state = torch.load(self.model_path / 'train_state.pth', weights_only=False)
         train_args = train_state['args']
@@ -65,13 +78,13 @@ class Embedder:
         self.data: DatasetDict = load_and_split(
             files,
             0.0,
+            timestamp=datetime.fromisoformat(self.timestamp) if self.timestamp else None
         )["val"]
 
         self.vector_db = VectorDatabase(self.model.embedding_dim)
         self.device = 'cuda'
 
     def embed_dataset(self):
-        current_id = 0
         batch_size: int = 128
         self.model.eval()
         self.model.to(self.device)
@@ -81,7 +94,8 @@ class Embedder:
                 loop.set_description(k)
                 for i in loop:
                     last_idx = min(i + batch_size, len(v))
-                    sentences: list[str] = v[i:last_idx]['positive']
+                    batch = v[i:last_idx]
+                    sentences: list[str] = batch['positive']
                     inputs = self.model.tokenizer(
                         sentences,
                         padding=True,
@@ -95,10 +109,16 @@ class Embedder:
                     }
                     embedding = self.model(**inputs)
                     np_arr = embedding.detach().cpu().numpy()
-                    for idx in range(last_idx - i):
-                        self.vector_db.add(current_id + idx, np_arr[idx])
-                    current_id += (last_idx - i)
+                    indices = batch['index']
+                    for idx, emb in zip(indices, np_arr):
+                        self.vector_db.add(idx, emb)
         self.vector_db.save(self.output_path / 'embeddings.pkl')
+        with open(self.output_path / 'metadata.json', 'w') as f:
+            json.dump({
+                "model_path": self.model_path.__str__(),
+                "timestamp": self.timestamp,
+                "data_path": self.data_path.__str__()
+            }, f)
 
 
 def main():
