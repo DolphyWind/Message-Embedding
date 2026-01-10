@@ -4,20 +4,18 @@ import json
 from pathlib import Path
 
 from datasets import DatasetDict
-from faiss import IndexFlatL2
+from faiss import IndexFlatIP, IndexIDMap2, write_index
+import numpy as np
 import torch
 from tqdm import tqdm
 
 from data import load_and_split
 from model import MessageEmbeddingModel
-from vector_database import VectorDatabase
-from model import MessageEmbeddingModel
-from vector_database import VectorDatabase
 
 
 def parse_args():
     parser = ArgumentParser(
-        description="Create vector embeddings "
+        description="Create vector embeddings",
     )
     parser.add_argument(
         '--data_path',
@@ -43,6 +41,12 @@ def parse_args():
         help="Timestamp to filter",
         default=None
     )
+    parser.add_argument(
+        '--train_split',
+        type=float,
+        help="Train split. Since this is a test script, train partition will be discarded.",
+        default=0.0,
+    )
     return parser.parse_args()
 
 
@@ -52,6 +56,7 @@ class Embedder:
         self.model_path: Path = args.model_path
         self.output_path: Path = args.output_path
         self.timestamp: str = args.timestamp
+        self.train_split: float = args.train_split
         self.output_path.mkdir(exist_ok=True, parents=True)
         train_state = torch.load(self.model_path / 'train_state.pth', weights_only=False)
         train_args = train_state['args']
@@ -67,7 +72,6 @@ class Embedder:
                 "target_modules": ["query", "key", "value", "output.dense"],
                 "bias": "none",
                 "lora_dropout": train_args.lora_dropout,
-
             }
         )
         model_state_dict = torch.load(self.model_path / 'model_best.pth')['model']
@@ -77,11 +81,12 @@ class Embedder:
         files = [p for p in self.data_path.glob('*.parquet')]
         self.data: DatasetDict = load_and_split(
             files,
-            0.0,
+            self.train_split,
             timestamp=datetime.fromisoformat(self.timestamp) if self.timestamp else None
         )["val"]
 
-        self.vector_db = VectorDatabase(self.model.embedding_dim)
+        self.vector_db = IndexFlatIP(self.model.embedding_dim)
+        self.vector_db = IndexIDMap2(self.vector_db)
         self.device = 'cuda'
 
     def embed_dataset(self):
@@ -109,16 +114,18 @@ class Embedder:
                     }
                     embedding = self.model(**inputs)
                     np_arr = embedding.detach().cpu().numpy()
-                    indices = batch['index']
-                    for idx, emb in zip(indices, np_arr):
-                        self.vector_db.add(idx, emb)
-        self.vector_db.save(self.output_path / 'embeddings.pkl')
+                    norms = np.linalg.norm(np_arr, axis=1, keepdims=True)
+                    np_arr = np_arr / norms
+                    indices = np.array(batch['index'], dtype=np.int64)
+                    self.vector_db.add_with_ids(np_arr, indices)
+        write_index(self.vector_db, str(self.output_path / 'embeddings.faiss'))
         with open(self.output_path / 'metadata.json', 'w') as f:
             json.dump({
                 "model_path": self.model_path.__str__(),
                 "timestamp": self.timestamp,
-                "data_path": self.data_path.__str__()
-            }, f)
+                "data_path": self.data_path.__str__(),
+                "train_split": self.train_split,
+            }, f, indent=4)
 
 
 def main():
