@@ -401,9 +401,9 @@ class Trainer:
                         self.optimizer.step()
                         self.lr_scheduler.step()
 
-                losses_tensor: torch.Tensor = torch.tensor(train_losses, device=self.accelerator.device)
-                losses_gathered: torch.Tensor = self.accelerator.gather(losses_tensor)
                 if self.accelerator.is_main_process:
+                    losses_tensor: torch.Tensor = torch.tensor(train_losses, device=self.accelerator.device)
+                    losses_gathered: torch.Tensor = self.accelerator.gather(losses_tensor)
                     avg_train_loss: float = losses_gathered.mean().item()
                     mlflow.log_metric("train_loss", avg_train_loss, step=epoch)
 
@@ -453,9 +453,9 @@ class Trainer:
                             last_avg = sum(val_losses[-num_last:]) / val_losses[-num_last:].__len__()
                             val_loop.set_postfix(loss=loss.item(), last_100_avg=last_avg, avg_loss=avg_loss)
 
-                    val_losses_tensor: torch.Tensor = torch.tensor(val_losses, device=self.accelerator.device)
-                    val_losses_gathered: torch.Tensor = self.accelerator.gather(val_losses_tensor)
                     if self.accelerator.is_main_process:
+                        val_losses_tensor: torch.Tensor = torch.tensor(val_losses, device=self.accelerator.device)
+                        val_losses_gathered: torch.Tensor = self.accelerator.gather(val_losses_tensor)
                         avg_val_loss: float = val_losses_gathered.mean().item()
                         mlflow.log_metric("val_loss", avg_val_loss, step=epoch)
 
