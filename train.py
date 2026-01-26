@@ -60,6 +60,10 @@ class Trainer:
             "infonce": infonce_loss,
             "clip": clip_loss,
         }[self.loss_func_type]
+        self.use_full_context: bool = args.use_full_context
+        self.last_message_only: bool = args.last_message_only
+        self.any_message_prob: float = args.any_message_prob
+        self.negative_index_distance: Optional[int] = args.negative_index_distance
         self.margin: float = args.margin
         self.temperature: float = args.temperature
         self.lr_ft: float = args.lr_ft
@@ -170,12 +174,18 @@ class Trainer:
             self.train_dataset = TripletDataset(
                 dataset['train'],
                 context_len=self.context_length,
-                full_context=False,
+                full_context=self.use_full_context,
+                last_message_only=self.last_message_only,
+                any_message_prob=self.any_message_prob,
+                negative_index_distance=self.negative_index_distance,
             )
             self.val_dataset = TripletDataset(
                 dataset['val'],
                 context_len=self.context_length,
-                full_context=False,
+                full_context=self.use_full_context,
+                last_message_only=self.last_message_only,
+                any_message_prob=self.any_message_prob,
+                negative_index_distance=self.negative_index_distance,
             )
         elif self.loss_func_type == "infonce_multipositive":
             self.train_dataset = MultipositiveInfoNCEDataset(

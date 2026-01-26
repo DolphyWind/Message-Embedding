@@ -69,6 +69,7 @@ class TripletDataset(Dataset):
         full_context: bool = False,
         last_message_only: bool = False,
         any_message_prob: float = 0.1,
+        negative_index_distance: Optional[int] = None,
     ) -> None:
         """
         Create a TripletDataset object
@@ -86,7 +87,9 @@ class TripletDataset(Dataset):
         last_message_only
             Only return the last message of block as its anchor.
         any_message_prob
-            Probability of randomly selecting a message even though last_message_only is provided. Used for regularization.
+            Probability of randomly selecting a message in the context even though last_message_only is provided. Used as regularization.
+        negative_index_distance
+            The maximum index distance of the negative example from the positive. For hard negatives.
         """  # noqa
         super().__init__()
 
@@ -96,6 +99,7 @@ class TripletDataset(Dataset):
         self._full_context: bool = full_context
         self._last_message_only: bool = last_message_only
         self._any_message_prob: float = any_message_prob
+        self.negative_index_distance: Optional[int] = negative_index_distance
         if self._full_context and self._last_message_only:
             warnings.warn("full_context and only_last_message are both True. Ignoring only_last_message.")
 
@@ -133,9 +137,16 @@ class TripletDataset(Dataset):
         positive = entry["positive"]
         anchor = entry["group"][group_idx]
 
-        negative_index = block_idx
+        if self.negative_index_distance and self._full_context:
+            self.negative_index_distance *= self._context_len
+        negative_index: int = block_idx
         while block_idx - self._context_len <= negative_index < block_idx + self._context_len:
-            negative_index = random.randint(0, self.__len__() // self._context_len - 1)
+            min_idx: int = 0
+            max_idx: int = self.__len__() - 1
+            if self.negative_index_distance:
+                min_idx = max(0, block_idx - self._context_len - self.negative_index_distance)
+                max_idx = min(self.__len__() - 1, block_idx + self._context_len + self.negative_index_distance)
+            negative_index = random.randint(min_idx, max_idx)
         ns, ni = self._index_dataset(negative_index)
         negative = ns[ni]["positive"]
         return anchor, positive, negative
