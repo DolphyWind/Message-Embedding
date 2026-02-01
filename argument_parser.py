@@ -175,6 +175,7 @@ class ArgParser:
         )
         self.parser.add_argument(
             '--continue_from',
+            '--cf',
             type=str,
             default=None,
             help="Path to continue training from."
