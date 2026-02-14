@@ -1,8 +1,10 @@
 from contextlib import nullcontext
+from datetime import datetime
+from functools import partial
 import math
 import os
 from pathlib import Path
-from typing import Literal, Optional, Any
+from typing import Any, Literal, Optional
 import warnings
 
 from accelerate import Accelerator
@@ -12,15 +14,21 @@ import mlflow
 import torch
 import torch.optim as optim
 from torch.optim.lr_scheduler import LRScheduler, LambdaLR, LinearLR
-from lr_scheduling import LinearWarmupCosineDecay
 from torch.utils.data import DataLoader, Dataset
 from tqdm import tqdm
-from datetime import datetime
 
-from loss import multipositive_infonce_loss, triplet_loss, infonce_loss, clip_loss
-from model import MessageEmbeddingModel
-from data import MultipositiveInfoNCEDataset, TripletDataset, collate_infonce, eval_group, load_and_split, collate_triplet
 from argument_parser import ArgParser
+from data import (
+    MultipositiveInfoNCEDataset,
+    TripletDataset,
+    collate_infonce,
+    collate_triplet,
+    eval_group,
+    load_and_split,
+)
+from loss import clip_loss, infonce_loss, multipositive_infonce_loss, triplet_loss
+from lr_scheduling import LinearWarmupCosineDecay
+from model import MessageEmbeddingModel
 
 
 # This should be LossFuncTypeType but that is lame
@@ -196,8 +204,46 @@ class Trainer:
                 dataset['val'],
                 context_len=self.context_length,
             )
+        elif self.loss_func_type == "infonce":
+            self.train_dataset = TripletDataset(
+                dataset['train'],
+                context_len=self.context_length,
+                full_context=self.use_full_context,
+                last_message_only=self.last_message_only,
+                any_message_prob=self.any_message_prob,
+                negative_index_distance=self.negative_index_distance,
+                no_negatives=True,
+            )
+            self.val_dataset = TripletDataset(
+                dataset['val'],
+                context_len=self.context_length,
+                full_context=self.use_full_context,
+                last_message_only=self.last_message_only,
+                any_message_prob=self.any_message_prob,
+                negative_index_distance=self.negative_index_distance,
+                no_negatives=True,
+            )
+        elif self.loss_func_type == "clip":
+            self.train_dataset = TripletDataset(
+                dataset['train'],
+                context_len=self.context_length,
+                full_context=self.use_full_context,
+                last_message_only=self.last_message_only,
+                any_message_prob=self.any_message_prob,
+                negative_index_distance=self.negative_index_distance,
+                no_negatives=True,
+            )
+            self.val_dataset = TripletDataset(
+                dataset['val'],
+                context_len=self.context_length,
+                full_context=self.use_full_context,
+                last_message_only=self.last_message_only,
+                any_message_prob=self.any_message_prob,
+                negative_index_distance=self.negative_index_distance,
+                no_negatives=True,
+            )
         else:
-            assert False, "TODO: Implement this"
+            raise AssertionError("Unreachable")
         self.optimizer = self.get_new_optimizer()
         steps_per_epoch: int = math.ceil(len(self.train_dataset) / self.batch_size)
         total_steps: int = self.epochs * steps_per_epoch
@@ -316,8 +362,12 @@ class Trainer:
                 collate_fn = collate_triplet
             elif self.loss_func_type == 'infonce_multipositive':
                 collate_fn = collate_infonce
+            elif self.loss_func_type == 'infonce':
+                collate_fn = collate_infonce
+            elif self.loss_func_type == 'clip':
+                collate_fn = collate_infonce
             else:
-                assert False, "TODO: Implement this"
+                raise AssertionError("Unreachable")
             train_loader = DataLoader(
                 self.train_dataset,
                 batch_size=self.batch_size,
@@ -345,8 +395,13 @@ class Trainer:
                 one_step_func = self._one_step_triplet
             elif self.loss_func_type == 'infonce_multipositive':
                 one_step_func = self._one_step_multipos_infonce
+            elif self.loss_func_type == 'infonce':
+                one_step_func = partial(self._one_step_infonce_clip, clip=False)
+            elif self.loss_func_type == 'clip':
+                one_step_func = partial(self._one_step_infonce_clip, clip=True)
             else:
-                assert False, "TODO: Implement this"
+                raise AssertionError("Unreachable")
+
             for epoch in range(self.init_epoch, self.epochs + 1):
                 # ---------------------------------
                 # Train
@@ -377,8 +432,18 @@ class Trainer:
                             "anchors": val_batch[0],
                             "positives": val_batch[1],
                         }
+                    elif self.loss_func_type == 'infonce':
+                        batch = {
+                            "anchors": val_batch[0],
+                            "positives": val_batch[1],
+                        }
+                    elif self.loss_func_type == 'clip':
+                        batch = {
+                            "anchors": val_batch[0],
+                            "positives": val_batch[1],
+                        }
                     else:
-                        assert False, "TODO: Implement this"
+                        raise AssertionError("Unreachable")
 
                     with self.accelerator.accumulate(self.model):
                         self.optimizer.zero_grad()
@@ -437,8 +502,19 @@ class Trainer:
                                 "anchors": val_batch[0],
                                 "positives": val_batch[1],
                             }
+                        elif self.loss_func_type == 'infonce':
+                            batch = {
+                                "anchors": val_batch[0],
+                                "positives": val_batch[1],
+                            }
+                        elif self.loss_func_type == 'clip':
+                            batch = {
+                                "anchors": val_batch[0],
+                                "positives": val_batch[1],
+                            }
                         else:
-                            assert False, "TODO: Implement this"
+                            raise AssertionError("Unreachable")
+
                         loss = one_step_func(
                             batch,
                             token_context_length,
@@ -543,6 +619,51 @@ class Trainer:
             for k, v in inputs.items()
         }
         loss = multipositive_infonce_loss(
+            **outputs,
+            temperature=temperature,
+        )
+
+        return loss
+
+    def _one_step_infonce_clip(
+        self,
+        batch: dict[str, Any],
+        max_length: int,
+        temperature: float,
+        clip: bool = False,
+        **kwargs,
+    ) -> torch.Tensor:
+        batch["positives"] = [s for sub in batch["positives"] for s in sub]
+        inputs: dict[str, dict[str, Any]] = {
+            "anchors": self.model.tokenizer(
+                batch["anchors"],
+                padding=True,
+                truncation=True,
+                max_length=max_length,
+                return_tensors='pt',
+            ),
+            "positives": self.model.tokenizer(
+                batch["positives"],
+                padding=True,
+                truncation=True,
+                max_length=max_length,
+                return_tensors="pt",
+            )
+        }
+        inputs = {
+            k: {
+                kk: vv.to(self.device)
+                for kk, vv in v.items()
+            }
+            for k, v in inputs.items()
+        }
+
+        outputs = {
+            k: self.model(**v)
+            for k, v in inputs.items()
+        }
+        loss_fn = clip_loss if clip else infonce_loss
+        loss = loss_fn(
             **outputs,
             temperature=temperature,
         )

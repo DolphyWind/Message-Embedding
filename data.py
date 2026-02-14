@@ -70,6 +70,7 @@ class TripletDataset(Dataset):
         last_message_only: bool = False,
         any_message_prob: float = 0.1,
         negative_index_distance: Optional[int] = None,
+        no_negatives: bool = False,
     ) -> None:
         """
         Create a TripletDataset object
@@ -90,6 +91,8 @@ class TripletDataset(Dataset):
             Probability of randomly selecting a message in the context even though last_message_only is provided. Used as regularization.
         negative_index_distance
             The maximum index distance of the negative example from the positive. For hard negatives.
+        no_negatives
+            Do not draw any negatives
         """  # noqa
         super().__init__()
 
@@ -100,6 +103,7 @@ class TripletDataset(Dataset):
         self._last_message_only: bool = last_message_only
         self._any_message_prob: float = any_message_prob
         self.negative_index_distance: Optional[int] = negative_index_distance
+        self.no_negatives: bool = no_negatives
         if self._full_context and self._last_message_only:
             warnings.warn("full_context and only_last_message are both True. Ignoring only_last_message.")
 
@@ -125,7 +129,7 @@ class TripletDataset(Dataset):
             group_idx: int = index % self._context_len
         else:
             block_idx = index
-            # TODO: Maybe make any message a special case when any_message_prob=1
+            # Maybe make "any message" branch a special case of any_message_prob=1
             last_message_only = self._last_message_only and (random.uniform(0.0, 1.0) >= self._any_message_prob)
             if last_message_only:
                 group_idx = self._context_len - 1
@@ -136,6 +140,9 @@ class TripletDataset(Dataset):
 
         positive = entry["positive"]
         anchor = entry["group"][group_idx]
+
+        if self.no_negatives:
+            return anchor, positive
 
         if self.negative_index_distance and self._full_context:
             self.negative_index_distance *= self._context_len

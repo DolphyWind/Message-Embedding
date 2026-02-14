@@ -50,8 +50,8 @@ def clip_loss(
             temperature=temperature
         ) +
         infonce_loss(
-            anchors=anchors,
-            positives=positives,
+            anchors=positives,
+            positives=anchors,
             temperature=temperature
         )
     )
