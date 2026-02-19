@@ -11,6 +11,7 @@ def sqlite_table_to_parquet(
     table_name: str,
     parquet_path: str,
     context_length: int,
+    stride: int = 1,
 ) -> None:
     conn = sqlite3.connect(sqlite_path)
     try:
@@ -29,7 +30,7 @@ def sqlite_table_to_parquet(
         groups: list[list[str]] = []
         timestamps: list[str] = []
 
-        current_loop = tqdm(range(content.__len__() - context_length + 1))
+        current_loop = tqdm(range(0, content.__len__() - context_length + 1, stride))
         current_loop.set_description(table_name)
         for i in current_loop:
             group = content[i:i+context_length]
@@ -68,7 +69,7 @@ def parse_args() -> argparse.Namespace:
         "--input_file",
         type=str,
         required=True,
-        help="SQLite Database file to load to.",
+        help="SQLite Database file to load from.",
     )
     parser.add_argument(
         "--output_dir",
@@ -88,6 +89,12 @@ def parse_args() -> argparse.Namespace:
         default=None,
         nargs='+',
         help="Table names to select.",
+    )
+    parser.add_argument(
+        "--stride",
+        type=int,
+        default=1,
+        help="Stride parameter of sliding windows.",
     )
     return parser.parse_args()
 

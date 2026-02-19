@@ -53,7 +53,6 @@ class Tester:
                 "target_modules": ["query", "key", "value", "output.dense"],
                 "bias": "none",
                 "lora_dropout": train_args.lora_dropout,
-
             }
         )
         model_state_dict = torch.load(self.model_path / 'model_best.pth')['model']
