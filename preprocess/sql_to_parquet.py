@@ -106,6 +106,7 @@ def main() -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
     context_length: int = args.context_len
     table_names: list[str] = args.table_names
+    stride: int = args.stride
 
     for table in table_names:
         sqlite_table_to_parquet(
@@ -113,6 +114,7 @@ def main() -> None:
             table_name=table,
             parquet_path=str(output_dir / f"{table}.parquet"),
             context_length=context_length,
+            stride=stride,
         )
 
 
