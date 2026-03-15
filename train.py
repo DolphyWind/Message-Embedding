@@ -1,10 +1,11 @@
+import atexit
 from contextlib import nullcontext
 from datetime import datetime
 from functools import partial
 import math
 import os
 from pathlib import Path
-from typing import Any, Literal, Optional
+from typing import Any, Literal, Optional, Union
 import warnings
 
 from accelerate import Accelerator
@@ -28,6 +29,7 @@ from data import (
 )
 from loss import clip_loss, infonce_loss, multipositive_infonce_loss, triplet_loss
 from lr_scheduling import LinearWarmupCosineDecay
+from mlflow_logger import MLFlowLogger, NullLogger
 from model import MessageEmbeddingModel
 
 
@@ -54,6 +56,7 @@ class Trainer:
         self.optimizer: optim.Optimizer
         self.lr_scheduler: LRScheduler
         self.lora_config: dict[str, Any]
+        self.mlflow_logger: Union[MLFlowLogger, NullLogger]
 
     def read_args(self, args):
         self.args = args
@@ -326,11 +329,15 @@ class Trainer:
             if self.run_name:
                 extra_run_kwargs |= {'run_name': self.run_name}
             ctx = mlflow.start_run(log_system_metrics=True, run_id=self.run_id, **extra_run_kwargs)
+            self.mlflow_logger = MLFlowLogger(self.run_id)
         else:
             ctx = nullcontext()
+            self.mlflow_logger = NullLogger()
 
         with ctx as run:
             self.run_id = run.info.run_id if run else self.run_id
+            self.mlflow_logger.run_id = self.run_id
+
             run_path: Path = Path()
             if self.accelerator.is_main_process:
                 self.run_name = self.run_name or run.data.tags.get("mlflow.runName")
@@ -340,23 +347,23 @@ class Trainer:
 
                 total_params: int = sum([p.numel() for p in self.model.parameters()])
                 print(f"Model has {total_params} parameters.")
-                mlflow.log_param("lr_ft", self.lr_ft)
-                mlflow.log_param("lr_base", self.lr_base)
-                mlflow.log_param("weight_decay", self.weight_decay)
-                mlflow.log_param("base_model_name", self.base_model_name)
-                mlflow.log_param("pooling_mode", self.pooling_mode)
-                mlflow.log_param("context_length", self.context_length)
-                mlflow.log_param("margin", self.margin)
-                mlflow.log_param("lora", self.lora)
-                mlflow.log_param("lora_rank", self.lora_rank)
-                mlflow.log_param("lora_alpha", self.lora_alpha)
-                mlflow.log_param("lora_dropout", self.lora_dropout)
-                mlflow.log_param("optimizer_name", self.optimizer_name)
-                mlflow.log_param("lr_end_factor", self.lr_end_factor)
-                mlflow.log_param("train_size", self.train_size)
-                mlflow.log_param("batch_size", self.batch_size)
-                mlflow.log_param("mixed_precision", self.mixed_precision)
-                mlflow.log_param("param_count", total_params)
+                self.mlflow_logger.log_param("lr_ft", self.lr_ft)
+                self.mlflow_logger.log_param("lr_base", self.lr_base)
+                self.mlflow_logger.log_param("weight_decay", self.weight_decay)
+                self.mlflow_logger.log_param("base_model_name", self.base_model_name)
+                self.mlflow_logger.log_param("pooling_mode", self.pooling_mode)
+                self.mlflow_logger.log_param("context_length", self.context_length)
+                self.mlflow_logger.log_param("margin", self.margin)
+                self.mlflow_logger.log_param("lora", self.lora)
+                self.mlflow_logger.log_param("lora_rank", self.lora_rank)
+                self.mlflow_logger.log_param("lora_alpha", self.lora_alpha)
+                self.mlflow_logger.log_param("lora_dropout", self.lora_dropout)
+                self.mlflow_logger.log_param("optimizer_name", self.optimizer_name)
+                self.mlflow_logger.log_param("lr_end_factor", self.lr_end_factor)
+                self.mlflow_logger.log_param("train_size", self.train_size)
+                self.mlflow_logger.log_param("batch_size", self.batch_size)
+                self.mlflow_logger.log_param("mixed_precision", self.mixed_precision)
+                self.mlflow_logger.log_param("param_count", total_params)
 
             if self.loss_func_type == 'triplet':
                 collate_fn = collate_triplet
@@ -388,7 +395,6 @@ class Trainer:
                 self.model, self.optimizer, train_loader, val_loader, self.lr_scheduler
             )
 
-            tokenizer = self.model.tokenizer
             token_context_length: int = self.model.token_context_length
 
             if self.loss_func_type == 'triplet':
@@ -417,30 +423,30 @@ class Trainer:
 
                 train_iters = 0
                 self.model.train()
-                for val_batch in train_loop:
+                for train_batch in train_loop:
                     current_lr: float = self.optimizer.param_groups[0]["lr"]
                     train_iters += 1
 
                     if self.loss_func_type == 'triplet':
                         batch = {
-                            "anchors": val_batch[0],
-                            "positives": val_batch[1],
-                            "negatives": val_batch[2],
+                            "anchors": train_batch[0],
+                            "positives": train_batch[1],
+                            "negatives": train_batch[2],
                         }
                     elif self.loss_func_type == 'infonce_multipositive':
                         batch = {
-                            "anchors": val_batch[0],
-                            "positives": val_batch[1],
+                            "anchors": train_batch[0],
+                            "positives": train_batch[1],
                         }
                     elif self.loss_func_type == 'infonce':
                         batch = {
-                            "anchors": val_batch[0],
-                            "positives": val_batch[1],
+                            "anchors": train_batch[0],
+                            "positives": train_batch[1],
                         }
                     elif self.loss_func_type == 'clip':
                         batch = {
-                            "anchors": val_batch[0],
-                            "positives": val_batch[1],
+                            "anchors": train_batch[0],
+                            "positives": train_batch[1],
                         }
                     else:
                         raise AssertionError("Unreachable")
@@ -470,7 +476,7 @@ class Trainer:
                     losses_tensor: torch.Tensor = torch.tensor(train_losses, device=self.accelerator.device)
                     losses_gathered: torch.Tensor = self.accelerator.gather(losses_tensor)
                     avg_train_loss: float = losses_gathered.mean().item()
-                    mlflow.log_metric("train_loss", avg_train_loss, step=epoch)
+                    self.mlflow_logger.log_metric("train_loss", avg_train_loss, step=epoch)
 
                 # ---------------------------------
                 # Validation
@@ -488,29 +494,29 @@ class Trainer:
                 self.model.eval()
                 with torch.no_grad():
                     val_iters = 0
-                    for val_batch in val_loop:
+                    for train_batch in val_loop:
                         val_iters += 1
 
                         if self.loss_func_type == 'triplet':
                             batch = {
-                                "anchors": val_batch[0],
-                                "positives": val_batch[1],
-                                "negatives": val_batch[2],
+                                "anchors": train_batch[0],
+                                "positives": train_batch[1],
+                                "negatives": train_batch[2],
                             }
                         elif self.loss_func_type == 'infonce_multipositive':
                             batch = {
-                                "anchors": val_batch[0],
-                                "positives": val_batch[1],
+                                "anchors": train_batch[0],
+                                "positives": train_batch[1],
                             }
                         elif self.loss_func_type == 'infonce':
                             batch = {
-                                "anchors": val_batch[0],
-                                "positives": val_batch[1],
+                                "anchors": train_batch[0],
+                                "positives": train_batch[1],
                             }
                         elif self.loss_func_type == 'clip':
                             batch = {
-                                "anchors": val_batch[0],
-                                "positives": val_batch[1],
+                                "anchors": train_batch[0],
+                                "positives": train_batch[1],
                             }
                         else:
                             raise AssertionError("Unreachable")
@@ -533,7 +539,7 @@ class Trainer:
                         val_losses_tensor: torch.Tensor = torch.tensor(val_losses, device=self.accelerator.device)
                         val_losses_gathered: torch.Tensor = self.accelerator.gather(val_losses_tensor)
                         avg_val_loss: float = val_losses_gathered.mean().item()
-                        mlflow.log_metric("val_loss", avg_val_loss, step=epoch)
+                        self.mlflow_logger.log_metric("val_loss", avg_val_loss, step=epoch)
 
                 # ---------------------------------
                 # Model saving
@@ -704,7 +710,10 @@ class Trainer:
 def main():
     trainer = Trainer()
     trainer.init_model()
-    trainer.train()
+    try:
+        trainer.train()
+    finally:
+        trainer.mlflow_logger.stop()
 
 
 if __name__ == '__main__':
