@@ -15,7 +15,7 @@ class LinearWarmupCosineDecay(LRScheduler):
         last_epoch: int = -1,
     ) -> None:
         assert warmup_steps >= 0
-        assert total_steps > warmup_steps
+        # assert total_steps > warmup_steps
         assert start_factor >= 0.0
         assert end_factor >= 0.0
 
@@ -35,14 +35,16 @@ class LinearWarmupCosineDecay(LRScheduler):
             start_lr: float = base_lr * self.start_factor
             end_lr: float = base_lr * self.end_factor
 
+            safe_warmup_steps = max(1, self.warmup_steps)
+            safe_decay_steps = max(1, self.decay_steps)
             if step < self.warmup_steps:
                 if self.warmup_steps == 0:
                     lr = base_lr
                 else:
-                    lr = start_lr + (base_lr - start_lr) * (step / self.warmup_steps)
+                    lr = start_lr + (base_lr - start_lr) * (step / safe_warmup_steps)
             else:
                 decay_step: int = min(step - self.warmup_steps, self.decay_steps)
-                cosine: float = 0.5 * (1.0 + math.cos(math.pi * decay_step / self.decay_steps))
+                cosine: float = 0.5 * (1.0 + math.cos(math.pi * decay_step / safe_decay_steps))
                 lr = end_lr + (base_lr - end_lr) * cosine
 
             lrs.append(lr)
