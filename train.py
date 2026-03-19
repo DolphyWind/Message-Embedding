@@ -40,9 +40,6 @@ type PoolingType = Literal['mean', 'attention']
 
 class Trainer:
     def __init__(self) -> None:
-        self.parser: ArgParser = ArgParser()
-        args = self.parser.parse_args()
-        self.read_args(args)
         self.init_epoch: int = 1
         self.best_val_loss: float = float('inf')
         self.resuming_training: bool = False
@@ -106,11 +103,6 @@ class Trainer:
         self.gradient_accum_steps: int = args.gradient_accum_steps
 
         if not self.continue_from:
-            if not self.base_model_name:
-                self.parser.error("--base_model is required.")
-            if not self.experiment_name:
-                self.parser.error("--experiment_name is required.")
-
             self.experiment_path: Path = self.out_path / self.experiment_name
             self.experiment_path.mkdir(exist_ok=True, parents=True)
         self.lora_config: dict[str, Any] = {
@@ -708,7 +700,16 @@ class Trainer:
 
 
 def main():
+    parser: ArgParser = ArgParser()
+    args = parser.parse_args()
+    if not args.continue_from:
+        if not args.base_model:
+            parser.error("--base_model is required.")
+        if not args.experiment_name:
+            parser.error("--experiment_name is required.")
+
     trainer = Trainer()
+    trainer.read_args(args)
     trainer.init_model()
     try:
         trainer.train()

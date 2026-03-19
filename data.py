@@ -5,7 +5,6 @@ import warnings
 from datasets import DatasetDict, load_dataset
 import datasets
 import random
-import torch
 from torch.utils.data import Dataset
 from datetime import datetime
 from ast import literal_eval
@@ -85,6 +84,7 @@ class TripletDataset(Dataset):
             Context Length
         full_context
             Set True to sample all sub-messages individually as anchors. Otherwise anchor is randomly sampled. (Produces context_len times more elements.)
+            Currently only works for datasets with stride=1, otherwise it will probably generate incorrect data.
         last_message_only
             Only return the last message of block as its anchor.
         any_message_prob
