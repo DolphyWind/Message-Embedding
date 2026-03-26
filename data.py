@@ -139,7 +139,15 @@ class TripletDataset(Dataset):
         entry = current_segment[actual_block_index]
 
         positive = entry["positive"]
-        anchor = entry["group"][group_idx]
+        max_tries: int = 15
+        i = 0
+        anchor = ''
+        if not self._full_context and not last_message_only:
+            while i < max_tries:
+                anchor = entry["group"][group_idx]
+                if len(anchor) > 7 and ' ' in anchor:
+                    break
+                group_idx = random.randint(0, self._context_len - 1)
 
         if self.no_negatives:
             return anchor, positive
