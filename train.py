@@ -631,7 +631,6 @@ class Trainer:
         clip: bool = False,
         **kwargs,
     ) -> torch.Tensor:
-        batch["positives"] = [s for sub in batch["positives"] for s in sub]
         inputs: dict[str, dict[str, Any]] = {
             "anchors": self.model.tokenizer(
                 batch["anchors"],
