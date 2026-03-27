@@ -466,7 +466,7 @@ class Trainer:
 
                 if self.accelerator.is_main_process:
                     losses_tensor: torch.Tensor = torch.tensor(train_losses, device=self.accelerator.device)
-                    losses_gathered: torch.Tensor = self.accelerator.gather(losses_tensor)
+                    losses_gathered: torch.Tensor = self.accelerator.gather_for_metrics(losses_tensor)
                     avg_train_loss: float = losses_gathered.mean().item()
                     self.mlflow_logger.log_metric("train_loss", avg_train_loss, step=epoch)
 
@@ -529,7 +529,7 @@ class Trainer:
 
                     if self.accelerator.is_main_process:
                         val_losses_tensor: torch.Tensor = torch.tensor(val_losses, device=self.accelerator.device)
-                        val_losses_gathered: torch.Tensor = self.accelerator.gather(val_losses_tensor)
+                        val_losses_gathered: torch.Tensor = self.accelerator.gather_for_metrics(val_losses_tensor)
                         avg_val_loss: float = val_losses_gathered.mean().item()
                         self.mlflow_logger.log_metric("val_loss", avg_val_loss, step=epoch)
 
