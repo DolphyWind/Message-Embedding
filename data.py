@@ -148,6 +148,7 @@ class TripletDataset(Dataset):
                 if len(anchor) > 7 and ' ' in anchor:
                     break
                 group_idx = random.randint(0, self._context_len - 1)
+                i += 1
 
         if self.no_negatives:
             return anchor, positive
