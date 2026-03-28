@@ -259,6 +259,12 @@ class ArgParser:
             default=16,
             help="Batch size used for training",
         )
+        training.add_argument(
+            '--no_shuffle',
+            type=bool,
+            action='store_true',
+            help="Disable shuffling the dataset when training."
+        )
 
     def parse_args(self) -> Namespace:
         return self.parser.parse_args()

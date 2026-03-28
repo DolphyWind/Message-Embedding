@@ -101,6 +101,7 @@ class Trainer:
         self.mlflow_password: str = args.mlflow_password
         self.num_workers: int = args.num_workers
         self.gradient_accum_steps: int = args.gradient_accum_steps
+        self.no_shuffle: bool = args.no_shuffle
 
         if not self.continue_from:
             self.experiment_path: Path = self.out_path / self.experiment_name
@@ -370,7 +371,7 @@ class Trainer:
             train_loader = DataLoader(
                 self.train_dataset,
                 batch_size=self.batch_size,
-                shuffle=True,
+                shuffle=not self.no_shuffle,
                 collate_fn=collate_fn,
                 num_workers=self.num_workers,
                 pin_memory=True,
