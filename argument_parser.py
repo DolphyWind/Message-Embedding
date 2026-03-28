@@ -261,7 +261,6 @@ class ArgParser:
         )
         training.add_argument(
             '--no_shuffle',
-            type=bool,
             action='store_true',
             help="Disable shuffling the dataset when training."
         )
