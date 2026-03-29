@@ -77,7 +77,7 @@ class Tester:
     def test(self):
         self.model.eval()
         self.model.to(self.device)
-        batch_size: int = 128
+        batch_size: int = 32
 
         results: dict[str, dict] = defaultdict(dict)
         total_ta1: int = 0
@@ -88,14 +88,21 @@ class Tester:
             top_at_1: int = 0
             top_at_5: int = 0
             top_at_8: int = 0
-            total_len += len(v)
+            total_sentence_length = 0
             loop = tqdm(range(0, len(v), batch_size))
             loop.set_description(dataset_name)
 
             for i in loop:
                 last_idx = min(i + batch_size, len(v))
                 batch = v[i:last_idx]
-                sentences: list[str] = [g[-1] for g in batch['group']]
+                true_indices: list[int] = []
+                sentences: list[str] = []
+                # sentences: list[str] = [g[-1] for g in batch['group']]
+                for g, idx in zip(batch['group'], batch['index']):
+                    for sent in g:
+                        if len(sent) > 7 and ' ' in sent:
+                            sentences.append(sent)
+                            true_indices.append(idx)
                 inputs = self.model.tokenizer(
                     sentences,
                     padding=True,
@@ -111,7 +118,7 @@ class Tester:
                 np_arr = embedding.detach().cpu().numpy()
                 norms = np.linalg.norm(np_arr, axis=1, keepdims=True)
                 np_arr = np_arr / norms
-                true_indices = batch['index']
+                # true_indices = batch['index']
 
                 pred_indices = self.vector_db.search(np_arr, k=8)[1]
                 top_1: int = 0
@@ -124,15 +131,17 @@ class Tester:
                 top_at_1 += top_1
                 top_at_5 += top_5
                 top_at_8 += top_8
+                total_sentence_length += len(sentences)
 
             total_ta1 += top_at_1
             total_ta5 += top_at_5
             total_ta8 += top_at_8
             current_results = {
-                "top_at_1": top_at_1 / len(v),
-                "top_at_5": top_at_5 / len(v),
-                "top_at_8": top_at_8 / len(v),
+                "top_at_1": top_at_1 / total_sentence_length,
+                "top_at_5": top_at_5 / total_sentence_length,
+                "top_at_8": top_at_8 / total_sentence_length,
             }
+            total_len += total_sentence_length
             print(json.dumps(current_results, indent=4))
             results["datasets"][str(dataset_name)] = current_results
         results["total"] = {
