@@ -86,11 +86,6 @@ class ArgParser:
             '--base_model',
             type=str,
             # required=True,
-            choices=[
-                'TURKCELL/roberta-base-turkish-uncased',
-                'dbmdz/bert-base-turkish-128k-uncased',
-                'emrecan/bert-base-turkish-cased-mean-nli-stsb-tr',
-            ],
             default=None,
             help="Model name to finetune.",
         )
