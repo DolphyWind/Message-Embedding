@@ -10,7 +10,7 @@ My initial plan was to embed each message with a [Sentence Transfomer](https://a
 however, that doesn't work well in practice since there are a lot of messages that does not contain
 any meaningful semantics.
 
-Instead, I opted to aggrageta eight messages into a `context`, joined with special markers around
+Instead, I opted to aggregate eight messages into a `context`, joined with special markers around
 each message, and pulled their embeddings close to the individual messages they contain. This approach
 yielded significantly better results.
 
