@@ -72,7 +72,8 @@ class Embedder:
                 "target_modules": ["query", "key", "value", "output.dense"],
                 "bias": "none",
                 "lora_dropout": train_args.lora_dropout,
-            }
+            },
+            initialize_new=True,
         )
         model_state_dict = torch.load(self.model_path / 'model_best.pth')['model']
         self.model.load_state_dict(model_state_dict)

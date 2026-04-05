@@ -4,7 +4,7 @@ from peft import LoraConfig, get_peft_model
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from transformers import AutoModel, AutoTokenizer
+from transformers import AutoModel, AutoTokenizer, AutoConfig
 
 
 class MessageEmbeddingModel(nn.Module):
@@ -15,10 +15,14 @@ class MessageEmbeddingModel(nn.Module):
         pooling_mode: Literal['mean', 'attention'] = 'mean',
         use_lora: bool = False,
         lora_config: Optional[dict[str, Any]] = None,
+        initialize_new: bool = False,
     ) -> None:
         super().__init__()
 
-        self._base = AutoModel.from_pretrained(base_model)
+        if initialize_new:
+            self._base = AutoModel.from_config(AutoConfig.from_pretrained(base_model))
+        else:
+            self._base = AutoModel.from_pretrained(base_model)
         self._tokenizer = AutoTokenizer.from_pretrained(base_model)
         self._pooling_mode: Literal['mean', 'attention'] = pooling_mode
         self._embedding_dim: int = self._base.config.hidden_size

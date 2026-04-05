@@ -53,7 +53,8 @@ class Tester:
                 "target_modules": ["query", "key", "value", "output.dense"],
                 "bias": "none",
                 "lora_dropout": train_args.lora_dropout,
-            }
+            },
+            initialize_new=True,
         )
         model_state_dict = torch.load(self.model_path / 'model_best.pth')['model']
         self.model.load_state_dict(model_state_dict)
@@ -77,7 +78,7 @@ class Tester:
     def test(self):
         self.model.eval()
         self.model.to(self.device)
-        batch_size: int = 32
+        batch_size: int = 4
 
         results: dict[str, dict] = defaultdict(dict)
         total_ta1: int = 0
