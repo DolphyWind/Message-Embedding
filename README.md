@@ -26,7 +26,7 @@ Specifically, a `context` looks like this:
 <user7>Shut up!</user>
 ```
 
-Note: The `<userX\>` tokens shown above are static, they don't contain any user related information.
+Note: The `<userX>` tokens shown above are static, they don't contain any user related information.
 That's just what I call them.
 
 This works under the assumption is that a search query is semantically close to a message contained
