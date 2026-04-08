@@ -16,7 +16,7 @@ class MessageEmbeddingModel(nn.Module):
         base_model: str,
         message_context_length: int,
         token_context_length: int,
-        pooling_mode: Literal['max', 'mean', 'attention'] = 'mean',
+        pooling_mode: PoolingType = 'mean',
         use_lora: bool = False,
         lora_config: Optional[dict[str, Any]] = None,
         initialize_new: bool = False,
@@ -73,16 +73,30 @@ class MessageEmbeddingModel(nn.Module):
         return pooler_out
 
     def get_param_groups(self) -> dict[str, Any]:
-        # input_embeddings = self._base.get_input_embeddings()
         base_model_params = [p for n, p in self._base.named_parameters()]
-        additional_params = []  # list(self.adapter.parameters())
+        additional_params = []
         if self._pooling_mode == 'attention':
-            additional_params.extend(self.attention_query.parameters())
+            additional_params.extend(self.pooler.parameters())
 
         return {
             'base': base_model_params,
             'additional': additional_params
         }
+        
+    def unwrap_base(self) -> None:
+        if not isinstance(self._base, WrappedModel):
+            raise RuntimeError("Base model is already unwrapped")
+
+        inner_base = self._base.base
+        base_emb = self._base.base.get_input_embeddings()
+        adapter_weights = self.adapter.new_emb.weight.data.to(
+            device=base_emb.weight.device, 
+            dtype=base_emb.weight.dtype
+        )
+
+        base_emb.weight.data[self._old_vocab_size:] = adapter_weights
+        self._base = inner_base
+        del self.adapter
 
     @property
     def tokenizer(self):
@@ -121,7 +135,7 @@ class WrappedModel(nn.Module):
             embed[mask] = self.adapter(new_ids)
 
         return self.base(inputs_embeds=embed, *args, **kwargs)
-
+    
 
 class MeanPoolingModule(nn.Module):
     def __init__(self):
