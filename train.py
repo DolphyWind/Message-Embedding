@@ -30,12 +30,11 @@ from data import (
 from loss import clip_loss, infonce_loss, multipositive_infonce_loss, triplet_loss
 from lr_scheduling import LinearWarmupCosineDecay
 from mlflow_logger import MLFlowLogger, NullLogger
-from model import MessageEmbeddingModel
+from model import MessageEmbeddingModel, PoolingType
 
 
 # This should be LossFuncTypeType but that is lame
 type LossFuncType = Literal['triplet', 'infonce_multipositive', 'infonce', 'clip']
-type PoolingType = Literal['mean', 'attention']
 
 
 class Trainer:
@@ -59,7 +58,8 @@ class Trainer:
         self.args = args
         self.base_model_name: str = args.base_model
         self.pooling_mode: PoolingType = args.pooling_mode
-        self.context_length: int = args.context_length
+        self.context_length: int = args.message_context_length
+        self.token_context_length: int = args.token_context_length
         self.timestamp: Optional[str] = args.timestamp
         self.loss_func_type: LossFuncType = args.loss_func
         self.loss_func = {
@@ -102,6 +102,7 @@ class Trainer:
         self.num_workers: int = args.num_workers
         self.gradient_accum_steps: int = args.gradient_accum_steps
         self.no_shuffle: bool = args.no_shuffle
+        self.log_last_k: int = args.log_last_k
 
         if not self.continue_from:
             self.experiment_path: Path = self.out_path / self.experiment_name
@@ -165,6 +166,7 @@ class Trainer:
         self.model = MessageEmbeddingModel(
             base_model=self.base_model_name,
             message_context_length=self.context_length,
+            token_context_length=self.token_context_length,
             pooling_mode=self.pooling_mode,
             use_lora=self.lora,
             lora_config=self.lora_config,
@@ -174,7 +176,7 @@ class Trainer:
         for k in dataset["val"]:
             dataset["val"][k] = dataset["val"][k].map(eval_group, num_proc=self.num_workers)
 
-        if self.loss_func_type == "triplet":
+        if self.loss_func_type in ("triplet", "infonce", "clip"):
             self.train_dataset = TripletDataset(
                 dataset['train'],
                 context_len=self.context_length,
@@ -199,44 +201,6 @@ class Trainer:
             self.val_dataset = MultipositiveInfoNCEDataset(
                 dataset['val'],
                 context_len=self.context_length,
-            )
-        elif self.loss_func_type == "infonce":
-            self.train_dataset = TripletDataset(
-                dataset['train'],
-                context_len=self.context_length,
-                full_context=self.use_full_context,
-                last_message_only=self.last_message_only,
-                any_message_prob=self.any_message_prob,
-                negative_index_distance=self.negative_index_distance,
-                no_negatives=True,
-            )
-            self.val_dataset = TripletDataset(
-                dataset['val'],
-                context_len=self.context_length,
-                full_context=self.use_full_context,
-                last_message_only=self.last_message_only,
-                any_message_prob=self.any_message_prob,
-                negative_index_distance=self.negative_index_distance,
-                no_negatives=True,
-            )
-        elif self.loss_func_type == "clip":
-            self.train_dataset = TripletDataset(
-                dataset['train'],
-                context_len=self.context_length,
-                full_context=self.use_full_context,
-                last_message_only=self.last_message_only,
-                any_message_prob=self.any_message_prob,
-                negative_index_distance=self.negative_index_distance,
-                no_negatives=True,
-            )
-            self.val_dataset = TripletDataset(
-                dataset['val'],
-                context_len=self.context_length,
-                full_context=self.use_full_context,
-                last_message_only=self.last_message_only,
-                any_message_prob=self.any_message_prob,
-                negative_index_distance=self.negative_index_distance,
-                no_negatives=True,
             )
         else:
             raise AssertionError("Unreachable")
@@ -360,11 +324,7 @@ class Trainer:
 
             if self.loss_func_type == 'triplet':
                 collate_fn = collate_triplet
-            elif self.loss_func_type == 'infonce_multipositive':
-                collate_fn = collate_infonce
-            elif self.loss_func_type == 'infonce':
-                collate_fn = collate_infonce
-            elif self.loss_func_type == 'clip':
+            elif self.loss_func_type in ('infonce_multipositive', 'infonce', 'clip'):
                 collate_fn = collate_infonce
             else:
                 raise AssertionError("Unreachable")
@@ -394,13 +354,15 @@ class Trainer:
                 one_step_func = self._one_step_triplet
             elif self.loss_func_type == 'infonce_multipositive':
                 one_step_func = self._one_step_multipos_infonce
-            elif self.loss_func_type == 'infonce':
+            elif self.loss_func_type in 'infonce':
                 one_step_func = partial(self._one_step_infonce_clip, clip=False)
             elif self.loss_func_type == 'clip':
                 one_step_func = partial(self._one_step_infonce_clip, clip=True)
             else:
                 raise AssertionError("Unreachable")
 
+            train_step_counter: int = 0
+            val_step_counter: int = 0
             for epoch in range(self.init_epoch, self.epochs + 1):
                 # ---------------------------------
                 # Train
@@ -414,40 +376,14 @@ class Trainer:
                 total_train_loss: float = 0.0
                 train_losses: list[float] = []
 
-                train_iters = 0
                 self.model.train()
-                for train_batch in train_loop:
+                for train_iters, train_batch in enumerate(train_loop, start=1):
                     current_lr: float = self.optimizer.param_groups[0]["lr"]
-                    train_iters += 1
-
-                    if self.loss_func_type == 'triplet':
-                        batch = {
-                            "anchors": train_batch[0],
-                            "positives": train_batch[1],
-                            "negatives": train_batch[2],
-                        }
-                    elif self.loss_func_type == 'infonce_multipositive':
-                        batch = {
-                            "anchors": train_batch[0],
-                            "positives": train_batch[1],
-                        }
-                    elif self.loss_func_type == 'infonce':
-                        batch = {
-                            "anchors": train_batch[0],
-                            "positives": train_batch[1],
-                        }
-                    elif self.loss_func_type == 'clip':
-                        batch = {
-                            "anchors": train_batch[0],
-                            "positives": train_batch[1],
-                        }
-                    else:
-                        raise AssertionError("Unreachable")
 
                     with self.accelerator.accumulate(self.model):
                         self.optimizer.zero_grad()
                         loss = one_step_func(
-                            batch,
+                            train_batch,
                             token_context_length,
                             margin=self.margin,
                             temperature=self.temperature,
@@ -457,9 +393,11 @@ class Trainer:
                         avg_loss: float = total_train_loss / train_iters
 
                         if self.accelerator.is_main_process:
-                            num_last: int = 100
+                            num_last = self.log_last_k
                             last_avg = sum(train_losses[-num_last:]) / train_losses[-num_last:].__len__()
+                            self.mlflow_logger.log_metric("individual_train_loss", loss.item(), step=train_step_counter)
                             train_loop.set_postfix(loss=loss.item(), avg_loss=avg_loss, last_100_avg=last_avg, lr=current_lr)
+                            train_step_counter += 1
 
                         self.accelerator.backward(loss)
                         self.optimizer.step()
@@ -486,36 +424,9 @@ class Trainer:
 
                 self.model.eval()
                 with torch.no_grad():
-                    val_iters = 0
-                    for train_batch in val_loop:
-                        val_iters += 1
-
-                        if self.loss_func_type == 'triplet':
-                            batch = {
-                                "anchors": train_batch[0],
-                                "positives": train_batch[1],
-                                "negatives": train_batch[2],
-                            }
-                        elif self.loss_func_type == 'infonce_multipositive':
-                            batch = {
-                                "anchors": train_batch[0],
-                                "positives": train_batch[1],
-                            }
-                        elif self.loss_func_type == 'infonce':
-                            batch = {
-                                "anchors": train_batch[0],
-                                "positives": train_batch[1],
-                            }
-                        elif self.loss_func_type == 'clip':
-                            batch = {
-                                "anchors": train_batch[0],
-                                "positives": train_batch[1],
-                            }
-                        else:
-                            raise AssertionError("Unreachable")
-
+                    for val_iters, val_batch in enumerate(val_loop, start=1):
                         loss = one_step_func(
-                            batch,
+                            val_batch,
                             token_context_length,
                             margin=self.margin,
                             temperature=self.temperature,
@@ -524,15 +435,21 @@ class Trainer:
                         val_losses.append(loss.item())
                         avg_loss: float = total_val_loss / val_iters
                         if self.accelerator.is_main_process:
-                            num_last: int = 100
+                            num_last = self.log_last_k
+                            self.mlflow_logger.log_metric("individual_val_loss", loss.item(), step=val_step_counter)
                             last_avg = sum(val_losses[-num_last:]) / val_losses[-num_last:].__len__()
                             val_loop.set_postfix(loss=loss.item(), last_100_avg=last_avg, avg_loss=avg_loss)
+                            val_step_counter += 1
 
                     if self.accelerator.is_main_process:
                         val_losses_tensor: torch.Tensor = torch.tensor(val_losses, device=self.accelerator.device)
+                        last_k_val_losses_tensor: torch.Tensor = torch.tensor(val_losses[-100:], device=self.accelerator.device)
                         val_losses_gathered: torch.Tensor = self.accelerator.gather_for_metrics(val_losses_tensor)
                         avg_val_loss: float = val_losses_gathered.mean().item()
+                        avg_last_k_val_loss: float = last_k_val_losses_tensor.mean().item()
+                        k = self.log_last_k 
                         self.mlflow_logger.log_metric("val_loss", avg_val_loss, step=epoch)
+                        self.mlflow_logger.log_metric(f"val_last_{k}_loss", avg_last_k_val_loss)
 
                 # ---------------------------------
                 # Model saving
@@ -547,11 +464,16 @@ class Trainer:
 
     def _one_step_triplet(
         self,
-        batch: dict[str, list[str]],
+        raw_batch,
         max_length: int,
         margin: float,
         **kwargs,
     ) -> torch.Tensor:
+        batch = {
+            "anchors": raw_batch[0],
+            "positives": raw_batch[1],
+            "negatives": raw_batch[2],
+        }
         inputs: dict[str, dict[str, Any]] = {
             k: self.model.tokenizer(
                 v,
@@ -583,11 +505,15 @@ class Trainer:
 
     def _one_step_multipos_infonce(
         self,
-        batch: dict[str, Any],
+        raw_batch,
         max_length: int,
         temperature: float,
         **kwargs,
     ) -> torch.Tensor:
+        batch = {
+            "anchors": raw_batch[0],
+            "positives": raw_batch[1],
+        }
         batch["positives"] = [s for sub in batch["positives"] for s in sub]
         inputs: dict[str, dict[str, Any]] = {
             "anchors": self.model.tokenizer(
@@ -626,12 +552,16 @@ class Trainer:
 
     def _one_step_infonce_clip(
         self,
-        batch: dict[str, Any],
+        raw_batch,
         max_length: int,
         temperature: float,
         clip: bool = False,
         **kwargs,
     ) -> torch.Tensor:
+        batch = {
+            "anchors": raw_batch[0],
+            "positives": raw_batch[1],
+        }
         inputs: dict[str, dict[str, Any]] = {
             "anchors": self.model.tokenizer(
                 batch["anchors"],

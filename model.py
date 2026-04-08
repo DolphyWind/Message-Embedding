@@ -7,12 +7,16 @@ import torch.nn.functional as F
 from transformers import AutoModel, AutoTokenizer, AutoConfig
 
 
+type PoolingType = Literal['max', 'mean', 'attention']
+
+
 class MessageEmbeddingModel(nn.Module):
     def __init__(
         self,
         base_model: str,
         message_context_length: int,
-        pooling_mode: Literal['mean', 'attention'] = 'mean',
+        token_context_length: int,
+        pooling_mode: Literal['max', 'mean', 'attention'] = 'mean',
         use_lora: bool = False,
         lora_config: Optional[dict[str, Any]] = None,
         initialize_new: bool = False,
@@ -32,7 +36,7 @@ class MessageEmbeddingModel(nn.Module):
         # https://stackoverflow.com/questions/76547541/huggingface-how-do-i-find-the-max-length-of-a-model#comment136833899_77286207
         # self.token_context_length: int = self._tokenizer.model_max_length
         # self.token_context_length: int = self._base.config.max_position_embeddings
-        self.token_context_length: int = 512
+        self.token_context_length: int = token_context_length
 
         self._old_vocab_size: int = len(self._tokenizer)
         new_tokens = ['<video>', '</video>', '<link/>', '<attachment/>', '</user>'] + [f"<user{i}>" for i in range(self._message_context_length)]
@@ -44,7 +48,11 @@ class MessageEmbeddingModel(nn.Module):
             self._base.config.hidden_size,
         )
         if self._pooling_mode == 'attention':
-            self.attention_query: nn.Linear = nn.Linear(self._embedding_dim, 1)
+            self.pooler = AttentionPoolingModule(self._embedding_dim)
+        elif self._pooling_mode == 'mean':
+            self.pooler = MeanPoolingModule()
+        elif self._pooling_mode == 'max':
+            self.pooler = MaxPoolingModule()
 
         if self._use_lora:
             config = LoraConfig(
@@ -61,26 +69,8 @@ class MessageEmbeddingModel(nn.Module):
             attention_mask=attention_mask,
             **kwargs
         ).last_hidden_state
-        pooler_out = self.pool(last_hidden_state, attention_mask)
+        pooler_out = self.pooler(last_hidden_state, attention_mask)
         return pooler_out
-
-    def pool(self, x, attn_mask):
-        if self._pooling_mode == 'mean':
-            if attn_mask is None:
-                return x.mean(dim=1)
-            else:
-                mask = attn_mask.unsqueeze(-1).to(x.dtype)  # [B, seq_len, 1]
-                return (x * mask).sum(dim=1) / mask.sum(dim=1)
-        elif self._pooling_mode == 'attention':
-            scores = self.attention_query(x).squeeze(-1)
-            if attn_mask is not None:
-                scores = scores.masked_fill(attn_mask == 0, float('-inf'))
-
-            weights = F.softmax(scores, dim=-1)
-            pooled = torch.bmm(weights.unsqueeze(1), x).squeeze(1)
-            return pooled
-        else:
-            raise NotImplementedError(f'{self._pooling_mode} is not a valid pooling mode!')
 
     def get_param_groups(self) -> dict[str, Any]:
         # input_embeddings = self._base.get_input_embeddings()
@@ -103,7 +93,7 @@ class MessageEmbeddingModel(nn.Module):
         return self._embedding_dim
 
 
-class NewTokenEmbeddingAdapter(torch.nn.Module):
+class NewTokenEmbeddingAdapter(nn.Module):
     def __init__(self, num_new_tokens: int, d_model: int):
         super().__init__()
         self.new_emb: nn.Embedding = nn.Embedding(
@@ -115,7 +105,7 @@ class NewTokenEmbeddingAdapter(torch.nn.Module):
         return self.new_emb(new_token_ids)
 
 
-class WrappedModel(torch.nn.Module):
+class WrappedModel(nn.Module):
     def __init__(self, base_model, adapter, old_vocab_size):
         super().__init__()
         self.base = base_model
@@ -131,3 +121,35 @@ class WrappedModel(torch.nn.Module):
             embed[mask] = self.adapter(new_ids)
 
         return self.base(inputs_embeds=embed, *args, **kwargs)
+
+
+class MeanPoolingModule(nn.Module):
+    def __init__(self):
+        super().__init__()
+
+    def forward(self, x, attn_mask):
+        mask = attn_mask.unsqueeze(-1).to(x.dtype)
+        return (x * mask).sum(dim=1) / mask.sum(dim=1)
+
+
+class MaxPoolingModule(nn.Module):
+    def __init__(self):
+        super().__init__()
+
+    def forward(self, x, attn_mask):
+        x = x.masked_fill(attn_mask == 0, float('-inf'))
+        return x.max(dim=1).values
+
+
+class AttentionPoolingModule(nn.Module):
+    def __init__(self, embedding_dim: int):
+        super().__init__()
+        self.attention_query: nn.Linear = nn.Linear(embedding_dim, 1)
+
+    def forward(self, x, attn_mask):
+        scores = self.attention_query(x).squeeze(-1)
+        scores = scores.masked_fill(attn_mask == 0, float('-inf'))
+
+        weights = F.softmax(scores, dim=-1)
+        pooled = torch.bmm(weights.unsqueeze(1), x).squeeze(1)
+        return pooled

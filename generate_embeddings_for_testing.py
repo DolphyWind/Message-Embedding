@@ -63,7 +63,8 @@ class Embedder:
 
         self.model = MessageEmbeddingModel(
             base_model=train_args.base_model,
-            message_context_length=train_args.context_length,
+            message_context_length=train_args.message_context_length,
+            token_context_length=train_args.token_context_length,
             pooling_mode=train_args.pooling_mode,
             use_lora=train_args.lora,
             lora_config={

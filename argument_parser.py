@@ -80,6 +80,12 @@ class ArgParser:
             default=Path('./results'),
             help="Path to save outputs.",
         )
+        execution.add_argument(
+           "--log_last_k",
+           type=int,
+           default=100,
+           help="Log last k values of loss",
+        )
 
         training = self.parser.add_argument_group("Training")
         training.add_argument(
@@ -93,6 +99,7 @@ class ArgParser:
             '--pooling_mode',
             type=str,
             choices=[
+                'max',
                 'mean',
                 'attention',
             ],
@@ -100,10 +107,16 @@ class ArgParser:
             help="Pooling strategy",
         )
         training.add_argument(
-            '--context_length',
+            '--message_context_length',
             type=int,
             default=8,
-            help='Window size for when sampling messages'
+            help='The context length of the conversaiton window'
+        )
+        training.add_argument(
+           '--token_context_length',
+           type=int,
+           default=512,
+           help="Token context length of the underlying model.", 
         )
         training.add_argument(
             '--timestamp',
