@@ -462,6 +462,12 @@ class Trainer:
                             )
                         steps += 1
 
+                    if train_or_val == 'train':
+                        self.accelerator.backward(loss)
+                        self.optimizer.step()
+                        self.lr_scheduler.step()
+                        self.optimizer.zero_grad()
+
             if self.accelerator.is_main_process:
                 k = self.log_last_k 
                 losses_tensor: torch.Tensor = torch.tensor(
