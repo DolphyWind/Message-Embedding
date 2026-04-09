@@ -86,6 +86,12 @@ class ArgParser:
            default=100,
            help="Log last k values of loss",
         )
+        execution.add_argument(
+            "--log_loss_freq",
+            type=int,
+            default=100,
+            help="Frequency of logging the individual loss value.",
+        )
 
         training = self.parser.add_argument_group("Training")
         training.add_argument(

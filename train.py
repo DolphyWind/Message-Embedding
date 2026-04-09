@@ -1,3 +1,5 @@
+from typing import Callable
+from typing import ContextManager
 import atexit
 from contextlib import nullcontext
 from datetime import datetime
@@ -103,6 +105,7 @@ class Trainer:
         self.gradient_accum_steps: int = args.gradient_accum_steps
         self.no_shuffle: bool = args.no_shuffle
         self.log_last_k: int = args.log_last_k
+        self.log_loss_freq: int = args.log_loss_freq
 
         if not self.continue_from:
             self.experiment_path: Path = self.out_path / self.experiment_name
@@ -184,6 +187,7 @@ class Trainer:
                 last_message_only=self.last_message_only,
                 any_message_prob=self.any_message_prob,
                 negative_index_distance=self.negative_index_distance,
+                no_negatives=(self.loss_func_type != 'triplet'),
             )
             self.val_dataset = TripletDataset(
                 dataset['val'],
@@ -192,6 +196,7 @@ class Trainer:
                 last_message_only=self.last_message_only,
                 any_message_prob=self.any_message_prob,
                 negative_index_distance=self.negative_index_distance,
+                no_negatives=(self.loss_func_type != 'triplet'),
             )
         elif self.loss_func_type == "infonce_multipositive":
             self.train_dataset = MultipositiveInfoNCEDataset(
@@ -270,14 +275,15 @@ class Trainer:
                 "weight_decay": self.weight_decay,
             }
         ]
-        if self.optimizer_name == 'Adam':
-            return optim.Adam(optim_input)
-        elif self.optimizer_name == 'AdamW':
-            return optim.AdamW(optim_input)
-        elif self.optimizer_name == 'Lion':
-            return Lion(optim_input)
-        else:
-            raise NotImplementedError()
+        match self.optimizer_name:
+            case "Adam":
+                return optim.Adam(optim_input)
+            case "AdamW":
+                return optim.AdamW(optim_input)
+            case "Lion":
+                return Lion(optim_input)
+            case _:
+                raise NotImplementedError()
 
     def train(self) -> None:
         if self.accelerator.is_main_process:
@@ -348,8 +354,6 @@ class Trainer:
                 self.model, self.optimizer, train_loader, val_loader, self.lr_scheduler
             )
 
-            token_context_length: int = self.model.token_context_length
-
             if self.loss_func_type == 'triplet':
                 one_step_func = self._one_step_triplet
             elif self.loss_func_type == 'infonce_multipositive':
@@ -361,95 +365,23 @@ class Trainer:
             else:
                 raise AssertionError("Unreachable")
 
-            train_step_counter: int = 0
-            val_step_counter: int = 0
+            total_train_steps: int = 0
+            total_val_steps: int = 0
             for epoch in range(self.init_epoch, self.epochs + 1):
-                # ---------------------------------
-                # Train
-                # ---------------------------------
-                if self.accelerator.is_main_process:
-                    train_loop = tqdm(train_loader)
-                    train_loop.set_description(f"Training [{epoch}/{self.epochs}]")
-                else:
-                    train_loop = train_loader
-
-                total_train_loss: float = 0.0
-                train_losses: list[float] = []
-
-                self.model.train()
-                for train_iters, train_batch in enumerate(train_loop, start=1):
-                    current_lr: float = self.optimizer.param_groups[0]["lr"]
-
-                    with self.accelerator.accumulate(self.model):
-                        self.optimizer.zero_grad()
-                        loss = one_step_func(
-                            train_batch,
-                            token_context_length,
-                            margin=self.margin,
-                            temperature=self.temperature,
-                        )
-                        train_losses.append(loss.item())
-                        total_train_loss += loss.item()
-                        avg_loss: float = total_train_loss / train_iters
-
-                        if self.accelerator.is_main_process:
-                            num_last = self.log_last_k
-                            last_avg = sum(train_losses[-num_last:]) / train_losses[-num_last:].__len__()
-                            self.mlflow_logger.log_metric("individual_train_loss", loss.item(), step=train_step_counter)
-                            train_loop.set_postfix(loss=loss.item(), avg_loss=avg_loss, last_100_avg=last_avg, lr=current_lr)
-                            train_step_counter += 1
-
-                        self.accelerator.backward(loss)
-                        self.optimizer.step()
-                        self.lr_scheduler.step()
-
-                if self.accelerator.is_main_process:
-                    losses_tensor: torch.Tensor = torch.tensor(train_losses, device=self.accelerator.device)
-                    losses_gathered: torch.Tensor = self.accelerator.gather_for_metrics(losses_tensor)
-                    avg_train_loss: float = losses_gathered.mean().item()
-                    self.mlflow_logger.log_metric("train_loss", avg_train_loss, step=epoch)
-
-                # ---------------------------------
-                # Validation
-                # ---------------------------------
-                if self.accelerator.is_main_process:
-                    val_loop = tqdm(val_loader)
-                    val_loop.set_description(f"Validation [{epoch}/{self.epochs}]")
-                else:
-                    val_loop = val_loader
-
-                total_val_loss: float = 0.0
-                avg_val_loss: float = float('inf')
-                val_losses: list[float] = []
-
-                self.model.eval()
-                with torch.no_grad():
-                    for val_iters, val_batch in enumerate(val_loop, start=1):
-                        loss = one_step_func(
-                            val_batch,
-                            token_context_length,
-                            margin=self.margin,
-                            temperature=self.temperature,
-                        )
-                        total_val_loss += loss.item()
-                        val_losses.append(loss.item())
-                        avg_loss: float = total_val_loss / val_iters
-                        if self.accelerator.is_main_process:
-                            num_last = self.log_last_k
-                            self.mlflow_logger.log_metric("individual_val_loss", loss.item(), step=val_step_counter)
-                            last_avg = sum(val_losses[-num_last:]) / val_losses[-num_last:].__len__()
-                            val_loop.set_postfix(loss=loss.item(), last_100_avg=last_avg, avg_loss=avg_loss)
-                            val_step_counter += 1
-
-                    if self.accelerator.is_main_process:
-                        val_losses_tensor: torch.Tensor = torch.tensor(val_losses, device=self.accelerator.device)
-                        last_k_val_losses_tensor: torch.Tensor = torch.tensor(val_losses[-100:], device=self.accelerator.device)
-                        val_losses_gathered: torch.Tensor = self.accelerator.gather_for_metrics(val_losses_tensor)
-                        avg_val_loss: float = val_losses_gathered.mean().item()
-                        avg_last_k_val_loss: float = last_k_val_losses_tensor.mean().item()
-                        k = self.log_last_k 
-                        self.mlflow_logger.log_metric("val_loss", avg_val_loss, step=epoch)
-                        self.mlflow_logger.log_metric(f"val_last_{k}_loss", avg_last_k_val_loss)
+                _, total_train_steps = self.one_step(
+                    epoch=epoch,
+                    loader=train_loader,
+                    one_step_func=one_step_func,
+                    train_or_val="train",
+                    steps=total_train_steps,
+                )
+                avg_val_loss, total_val_steps = self.one_step(
+                    epoch=epoch,
+                    loader=val_loader,
+                    one_step_func=one_step_func,
+                    train_or_val="val",
+                    steps=total_val_steps,
+                )
 
                 # ---------------------------------
                 # Model saving
@@ -461,6 +393,99 @@ class Trainer:
                 )
                 self.best_val_loss = min(self.best_val_loss, avg_val_loss)
                 self.accelerator.wait_for_everyone()
+
+    def one_step(
+        self,
+        epoch: int,
+        loader: DataLoader,
+        one_step_func: Callable,
+        train_or_val: Literal["train", "val"],
+        steps: int,
+    ) -> Union[float, int]:
+        loop_text: str
+        grad_ctx: ContextManager
+        accelerator_ctx: ContextManager
+        model_mode_func: Callable[[], MessageEmbeddingModel]
+
+        match train_or_val:
+            case "train":
+                loop_text = "Training"
+                grad_ctx = nullcontext()
+                model_mode_func = self.model.train
+                accelerator_ctx = lambda: self.accelerator.accumulate(self.model)
+            case "val":
+                loop_text = "Validation"
+                grad_ctx = torch.no_grad()
+                model_mode_func = self.model.eval
+                accelerator_ctx = lambda: nullcontext()
+
+        if self.accelerator.is_main_process:
+            loop = tqdm(loader)
+            loop.set_description(f"{loop_text} [{epoch}/{self.epochs}]")
+        else:
+            loop = loader
+
+        total_loss: float = 0.0
+        losses: list[float] = []
+
+        model_mode_func()
+
+        with grad_ctx:
+            for iters, raw_batch in enumerate(loop, start=1):
+                current_lr: float = self.optimizer.param_groups[0]["lr"]
+
+                with accelerator_ctx():
+                    loss = one_step_func(
+                        raw_batch,
+                        self.token_context_length,
+                        margin=self.margin,
+                        temperature=self.temperature,
+                    )
+                    losses.append(loss.item())
+                    total_loss += loss.item()
+                    avg_loss: float = total_loss / iters
+
+                    if self.accelerator.is_main_process:
+                        num_last = self.log_last_k
+                        last_avg = sum(losses[-num_last:]) / losses[-num_last:].__len__()
+                        loop.set_postfix(
+                            loss=loss.item(),
+                            avg_loss=avg_loss,
+                            last_100_avg=last_avg,
+                            lr=current_lr
+                        )
+                        if steps % self.log_loss_freq == 0:
+                            self.mlflow_logger.log_metric(
+                                f"individual_{train_or_val}_loss",
+                                loss.item(),
+                                step=steps
+                            )
+                        steps += 1
+
+            if self.accelerator.is_main_process:
+                k = self.log_last_k 
+                losses_tensor: torch.Tensor = torch.tensor(
+                    losses,
+                    device=self.accelerator.device
+                )
+                last_k_losses_tensor: torch.Tensor = torch.tensor(
+                    losses[-k:],
+                    device=self.accelerator.device
+                )
+                losses_gathered: torch.Tensor = self.accelerator.gather_for_metrics(losses_tensor)
+                avg_loss: float = losses_gathered.mean().item()
+                avg_last_k_loss: float = last_k_losses_tensor.mean().item()
+                self.mlflow_logger.log_metric(
+                    f"{train_or_val}_loss",
+                    avg_loss,
+                    step=epoch,
+                )
+                self.mlflow_logger.log_metric(
+                    f"{train_or_val}_last_{k}_loss",
+                    avg_last_k_loss,
+                    step=epoch,
+                )
+        return avg_loss, steps
 
     def _one_step_triplet(
         self,

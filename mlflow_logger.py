@@ -1,7 +1,6 @@
-from threading import Thread
+from threading import Thread, Event
 from typing import Any, Optional, TypeVar, Iterator
 import mlflow
-from contextlib import nullcontext
 from queue import Queue
 
 
@@ -21,6 +20,7 @@ class MLFlowLogger:
     def __init__(self, run_id: Optional[str]):
         self.run_id = run_id
         self.__queue: Queue = Queue()
+        self.__stop_event: Event = Event()
         self.__main_thread = Thread(target=self.__mainloop)
         self.__main_thread.start()
 
@@ -31,7 +31,7 @@ class MLFlowLogger:
         self.__queue.put(lambda: mlflow.log_metric(key=key, value=value, **kwargs))
 
     def __mainloop(self):
-        while True:
+        while not self.__stop_event.is_set():
             task = self.__queue.get()
             if task is None:
                 break
@@ -42,13 +42,18 @@ class MLFlowLogger:
             for timeout in repeat_last([0.1, 1, 3, 9, 30, 90]):
                 try:
                     task()
+                except KeyboardInterrupt:
+                    break
                 except Exception as e:
                     print(f"{e}\nAn exception occured when logging. Trying again in {timeout} seconds.")
                 else:
                     break
+                if self.__stop_event.wait(timeout):
+                    break
             self.__queue.task_done()
 
     def stop(self):
+        self.__stop_event.set()
         self.__queue.put(None)
         self.__main_thread.join()
 
