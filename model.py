@@ -82,7 +82,7 @@ class MessageEmbeddingModel(nn.Module):
             'base': base_model_params,
             'additional': additional_params
         }
-        
+
     def unwrap_base(self) -> None:
         if not isinstance(self._base, WrappedModel):
             raise RuntimeError("Base model is already unwrapped")
@@ -90,7 +90,7 @@ class MessageEmbeddingModel(nn.Module):
         inner_base = self._base.base
         base_emb = self._base.base.get_input_embeddings()
         adapter_weights = self.adapter.new_emb.weight.data.to(
-            device=base_emb.weight.device, 
+            device=base_emb.weight.device,
             dtype=base_emb.weight.dtype
         )
 
@@ -135,7 +135,7 @@ class WrappedModel(nn.Module):
             embed[mask] = self.adapter(new_ids)
 
         return self.base(inputs_embeds=embed, *args, **kwargs)
-    
+
 
 class MeanPoolingModule(nn.Module):
     def __init__(self):
