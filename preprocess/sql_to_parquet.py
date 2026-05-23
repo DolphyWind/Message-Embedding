@@ -13,6 +13,7 @@ def sqlite_table_to_parquet(
     context_length: int,
     stride: int = 1,
 ) -> None:
+    print(f"  Loading table '{table_name}' from {sqlite_path} ...")
     conn = sqlite3.connect(sqlite_path)
     try:
         query = (
@@ -20,7 +21,9 @@ def sqlite_table_to_parquet(
             f"ORDER BY DATETIME(timestamp) ASC "
         )
         df: pd.DataFrame = pd.read_sql_query(query, conn)
+        print(f"  Loaded {len(df)} rows from '{table_name}'.")
         if df.empty:
+            print(f"  Table '{table_name}' is empty, skipping.")
             return
 
         content = df['content']
@@ -54,11 +57,13 @@ def sqlite_table_to_parquet(
             'timestamp': timestamps,
         })
 
+        print(f"  Writing {len(new_df)} windows to {parquet_path} ...")
         new_df.to_parquet(
             parquet_path,
             engine="fastparquet",
             index=False,
         )
+        print(f"  Done with '{table_name}'.")
     finally:
         conn.close()
 
@@ -105,9 +110,10 @@ def main() -> None:
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     context_length: int = args.context_len
-    table_names: list[str] = args.table_names
+    table_names: list[str] = args.table_names or get_all_table_names(db_filename)
     stride: int = args.stride
 
+    print(f"Processing {len(table_names)} table(s)")
     for table in table_names:
         sqlite_table_to_parquet(
             sqlite_path=db_filename,
@@ -116,6 +122,18 @@ def main() -> None:
             context_length=context_length,
             stride=stride,
         )
+
+
+def get_all_table_names(sqlite_path: str) -> list[str]:
+    print(f"Querying all table names from {sqlite_path} ...")
+    conn = sqlite3.connect(sqlite_path)
+    try:
+        cursor = conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
+        tables = [row[0] for row in cursor.fetchall()]
+        print(f"Found {len(tables)} tables")
+        return tables
+    finally:
+        conn.close()
 
 
 if __name__ == "__main__":
