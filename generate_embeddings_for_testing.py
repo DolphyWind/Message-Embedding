@@ -1,4 +1,5 @@
 from argparse import ArgumentParser
+from ast import literal_eval
 from datetime import datetime
 import json
 from pathlib import Path
@@ -9,7 +10,7 @@ import numpy as np
 import torch
 from tqdm import tqdm
 
-from data import load_and_split
+from data import load_and_split, fix_surrogates
 from model import MessageEmbeddingModel
 
 
@@ -47,6 +48,11 @@ def parse_args():
         help="Train split. Since this is a test script, train partition will be discarded.",
         default=0.0,
     )
+    parser.add_argument(
+        '--test_centroids',
+        action='store_true',
+        help="Average individual sentence embeddings instead of using context embeddings.",
+    )
     return parser.parse_args()
 
 
@@ -57,6 +63,7 @@ class Embedder:
         self.output_path: Path = args.output_path
         self.timestamp: str = args.timestamp
         self.train_split: float = args.train_split
+        self.test_centroids: bool = args.test_centroids
         self.output_path.mkdir(exist_ok=True, parents=True)
         train_state = torch.load(self.model_path / 'train_state.pth', weights_only=False)
         train_args = train_state['args']
@@ -103,20 +110,44 @@ class Embedder:
                 for i in loop:
                     last_idx = min(i + batch_size, len(v))
                     batch = v[i:last_idx]
-                    sentences: list[str] = batch['positive']
-                    inputs = self.model.tokenizer(
-                        sentences,
-                        padding=True,
-                        truncation=True,
-                        max_length=self.model.token_context_length,
-                        return_tensors='pt',
-                    )
-                    inputs = {
-                        k: v.to(self.device)
-                        for k, v in inputs.items()
-                    }
-                    embedding = self.model(**inputs)
-                    np_arr = embedding.detach().cpu().numpy()
+                    if self.test_centroids:
+                        groups: list[list[str]] = [
+                            [fix_surrogates(m) for m in literal_eval(g)]
+                            for g in batch['group']
+                        ]
+                        all_messages: list[str] = [m for g in groups for m in g]
+                        group_sizes: list[int] = [len(g) for g in groups]
+                        inputs = self.model.tokenizer(
+                            all_messages,
+                            padding=True,
+                            truncation=True,
+                            max_length=self.model.token_context_length,
+                            return_tensors='pt',
+                        )
+                        inputs = {k: v.to(self.device) for k, v in inputs.items()}
+                        embeddings = self.model(**inputs)
+                        centroids: list[np.ndarray] = []
+                        idx = 0
+                        for size in group_sizes:
+                            cent = embeddings[idx:idx + size].mean(dim=0)
+                            centroids.append(cent.detach().cpu().numpy())
+                            idx += size
+                        np_arr = np.array(centroids)
+                    else:
+                        sentences: list[str] = batch['positive']
+                        inputs = self.model.tokenizer(
+                            sentences,
+                            padding=True,
+                            truncation=True,
+                            max_length=self.model.token_context_length,
+                            return_tensors='pt',
+                        )
+                        inputs = {
+                            k: v.to(self.device)
+                            for k, v in inputs.items()
+                        }
+                        embedding = self.model(**inputs)
+                        np_arr = embedding.detach().cpu().numpy()
                     norms = np.linalg.norm(np_arr, axis=1, keepdims=True)
                     np_arr = np_arr / norms
                     indices = np.array(batch['index'], dtype=np.int64)
@@ -128,6 +159,7 @@ class Embedder:
                 "timestamp": self.timestamp,
                 "data_path": self.data_path.__str__(),
                 "train_split": self.train_split,
+                "test_centroids": self.test_centroids,
             }, f, indent=4)
 
 
