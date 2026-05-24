@@ -278,6 +278,11 @@ class ArgParser:
             action='store_true',
             help="Disable shuffling the dataset when training."
         )
+        training.add_argument(
+            '--no_user_tokens',
+            action="store_true",
+            help="Don't use any user tokens when training.",
+        )
 
     def parse_args(self) -> Namespace:
         return self.parser.parse_args()

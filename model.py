@@ -20,6 +20,7 @@ class MessageEmbeddingModel(nn.Module):
         use_lora: bool = False,
         lora_config: Optional[dict[str, Any]] = None,
         initialize_new: bool = False,
+        no_user_tokens: bool = False,
     ) -> None:
         super().__init__()
 
@@ -33,13 +34,16 @@ class MessageEmbeddingModel(nn.Module):
         self._message_context_length: int = message_context_length
         self._use_lora: bool = use_lora
         self._lora_config: dict[str, Any] = {} if lora_config is None else lora_config
+        self._no_user_tokens: bool = no_user_tokens
         # https://stackoverflow.com/questions/76547541/huggingface-how-do-i-find-the-max-length-of-a-model#comment136833899_77286207
         # self.token_context_length: int = self._tokenizer.model_max_length
         # self.token_context_length: int = self._base.config.max_position_embeddings
         self.token_context_length: int = token_context_length
 
         self._old_vocab_size: int = len(self._tokenizer)
-        new_tokens = ['<video>', '</video>', '<link/>', '<attachment/>', '</user>'] + [f"<user{i}>" for i in range(self._message_context_length)]
+        new_tokens = ['<video>', '</video>', '<link/>', '<attachment/>']
+        if not self._no_user_tokens:
+            new_tokens += ['</user>'] + [f"<user{i}>" for i in range(self._message_context_length)]
         self._num_new_tokens: int = self._tokenizer.add_tokens(new_tokens)
         self._base.resize_token_embeddings(len(self._tokenizer))
 

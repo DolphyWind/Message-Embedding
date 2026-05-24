@@ -67,6 +67,7 @@ class Embedder:
             token_context_length=train_args.token_context_length,
             pooling_mode=train_args.pooling_mode,
             use_lora=train_args.lora,
+            no_user_tokens=train_args.no_user_tokens,
             lora_config={
                 "r": train_args.lora_rank,
                 "lora_alpha": train_args.lora_alpha,

@@ -12,6 +12,7 @@ def sqlite_table_to_parquet(
     parquet_path: str,
     context_length: int,
     stride: int = 1,
+    no_user_tokens: bool = False,
 ) -> None:
     print(f"  Loading table '{table_name}' from {sqlite_path} ...")
     conn = sqlite3.connect(sqlite_path)
@@ -37,10 +38,13 @@ def sqlite_table_to_parquet(
         current_loop.set_description(table_name)
         for i in current_loop:
             group = content[i:i+context_length]
-            positive: str = ''.join([
-                f"<user{j}>{s}</user>"
-                for j, s in enumerate(group)
-            ])
+            if no_user_tokens:
+                positive: str = ' '.join(group)
+            else:
+                positive: str = ''.join([
+                    f"<user{j}>{s}</user>"
+                    for j, s in enumerate(group)
+                ])
             indices.append(i)
             groups.append(group.to_list())
             positive_sentences.append(positive)
@@ -101,6 +105,11 @@ def parse_args() -> argparse.Namespace:
         default=1,
         help="Stride parameter of sliding windows.",
     )
+    parser.add_argument(
+        "--no_user_tokens",
+        action="store_true",
+        help="Do not use any user tokens.",
+    )
     return parser.parse_args()
 
 
@@ -112,6 +121,7 @@ def main() -> None:
     context_length: int = args.context_len
     table_names: list[str] = args.table_names or get_all_table_names(db_filename)
     stride: int = args.stride
+    no_user_tokens: bool = args.no_user_tokens
 
     print(f"Processing {len(table_names)} table(s)")
     for table in table_names:
@@ -121,6 +131,7 @@ def main() -> None:
             parquet_path=str(output_dir / f"{table}.parquet"),
             context_length=context_length,
             stride=stride,
+            no_user_tokens=no_user_tokens,
         )
 
 

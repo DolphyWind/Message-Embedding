@@ -106,6 +106,7 @@ class Trainer:
         self.no_shuffle: bool = args.no_shuffle
         self.log_last_k: int = args.log_last_k
         self.log_loss_freq: int = args.log_loss_freq
+        self.no_user_tokens: bool = args.no_user_tokens
 
         if not self.continue_from:
             self.experiment_path: Path = self.out_path / self.experiment_name
@@ -173,6 +174,7 @@ class Trainer:
             pooling_mode=self.pooling_mode,
             use_lora=self.lora,
             lora_config=self.lora_config,
+            no_user_tokens=self.no_user_tokens,
         )
         for k in dataset["train"]:
             dataset["train"][k] = dataset["train"][k].map(eval_group, num_proc=self.num_workers)
@@ -316,16 +318,24 @@ class Trainer:
                 self.mlflow_logger.log_param("base_model_name", self.base_model_name)
                 self.mlflow_logger.log_param("pooling_mode", self.pooling_mode)
                 self.mlflow_logger.log_param("context_length", self.context_length)
+                self.mlflow_logger.log_param("token_context_length", self.token_context_length)
                 self.mlflow_logger.log_param("margin", self.margin)
+                self.mlflow_logger.log_param("temperature", self.temperature)
+                self.mlflow_logger.log_param("loss_func_type", self.loss_func_type)
                 self.mlflow_logger.log_param("lora", self.lora)
                 self.mlflow_logger.log_param("lora_rank", self.lora_rank)
                 self.mlflow_logger.log_param("lora_alpha", self.lora_alpha)
                 self.mlflow_logger.log_param("lora_dropout", self.lora_dropout)
                 self.mlflow_logger.log_param("optimizer_name", self.optimizer_name)
+                self.mlflow_logger.log_param("lr_scheduler_type", self.lr_scheduler_type)
                 self.mlflow_logger.log_param("lr_end_factor", self.lr_end_factor)
                 self.mlflow_logger.log_param("train_size", self.train_size)
                 self.mlflow_logger.log_param("batch_size", self.batch_size)
+                self.mlflow_logger.log_param("epochs", self.epochs)
+                self.mlflow_logger.log_param("gradient_accum_steps", self.gradient_accum_steps)
                 self.mlflow_logger.log_param("mixed_precision", self.mixed_precision)
+                self.mlflow_logger.log_param("use_full_context", self.use_full_context)
+                self.mlflow_logger.log_param("last_message_only", self.last_message_only)
                 self.mlflow_logger.log_param("param_count", total_params)
 
             if self.loss_func_type == 'triplet':
