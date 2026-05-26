@@ -106,7 +106,7 @@ class Trainer:
         self.no_shuffle: bool = args.no_shuffle
         self.log_last_k: int = args.log_last_k
         self.log_loss_freq: int = args.log_loss_freq
-        self.no_user_tokens: bool = args.no_user_tokens
+        self.no_user_tokens: bool = args.__getattribute__("no_user_tokens", False)
 
         if not self.continue_from:
             self.experiment_path: Path = self.out_path / self.experiment_name
