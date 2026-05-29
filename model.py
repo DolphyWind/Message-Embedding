@@ -155,7 +155,8 @@ class MaxPoolingModule(nn.Module):
         super().__init__()
 
     def forward(self, x, attn_mask):
-        x = x.masked_fill(attn_mask == 0, float('-inf'))
+        mask = attn_mask.unsqueeze(-1)
+        x = x.masked_fill(mask == 0, float('-inf'))
         return x.max(dim=1).values
 
 
