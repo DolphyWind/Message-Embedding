@@ -67,6 +67,7 @@ class Embedder:
         self.output_path.mkdir(exist_ok=True, parents=True)
         train_state = torch.load(self.model_path / 'train_state.pth', weights_only=False)
         train_args = train_state['args']
+        train_args.no_user_tokens = getattr(train_args, "no_user_tokens", False)
 
         self.model = MessageEmbeddingModel(
             base_model=train_args.base_model,
@@ -100,7 +101,7 @@ class Embedder:
         self.device = 'cuda'
 
     def embed_dataset(self):
-        batch_size: int = 128
+        batch_size: int = 16
         self.model.eval()
         self.model.to(self.device)
         with torch.no_grad():

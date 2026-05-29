@@ -105,6 +105,8 @@ class Tester:
                         if len(sent) > 7 and ' ' in sent:
                             sentences.append(sent)
                             true_indices.append(idx)
+                if not sentences:
+                    continue
                 inputs = self.model.tokenizer(
                     sentences,
                     padding=True,
