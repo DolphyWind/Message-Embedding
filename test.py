@@ -56,6 +56,7 @@ class Tester:
                 "lora_dropout": train_args.lora_dropout,
             },
             initialize_new=True,
+            no_user_tokens=getattr(train_args, "no_user_tokens", False),
         )
         model_state_dict = torch.load(self.model_path / 'model_best.pth')['model']
         self.model.load_state_dict(model_state_dict)
